@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.7.3
+// @version      0.7.4
 // @description  Mobile UX fixes for screeps.com: touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @author       sy-harabi
 // @license      MIT
@@ -1135,60 +1135,19 @@
   /* Open #!/map2 first, then triple-tap the burger (or call __smDump).  */
   /* ------------------------------------------------------------------ */
   function map2Probe() {
-    var L = ["=== map2 probe ==="];
+    var L = ["=== map2 probe v2 ==="];
     L.push("hash: " + location.hash);
 
-    // Which framework(s) are present as globals.
-    var globs = [];
-    [
-      "ng",
-      "angular",
-      "PIXI",
-      "app",
-      "ngDevMode",
-      "getAllAngularRootElements",
-      "Reflect",
-    ].forEach(function (k) {
-      if (window[k] !== undefined) globs.push(k + ":" + typeof window[k]);
-    });
-    L.push("globals: " + (globs.join(", ") || "(none)"));
-
-    var host =
-      document.querySelector("app-world-map-map") ||
-      document.querySelector("app-world-map-base") ||
-      document.querySelector("[class*='world-map'] canvas") ||
-      document.querySelector("section canvas");
-    if (!host) {
-      L.push("host: NOT FOUND -- open #!/map2 and re-run this dump.");
-      return L.join("\n");
+    // Angular Ivy debug API surface (ng.getComponent etc.) + PIXI version.
+    if (window.ng && typeof window.ng === "object") {
+      L.push("ng keys: " + Object.keys(window.ng).slice(0, 40).join(","));
+    } else {
+      L.push("ng: " + typeof window.ng);
     }
-    L.push("host: <" + host.tagName.toLowerCase() + ">");
+    if (window.PIXI) L.push("PIXI.VERSION: " + window.PIXI.VERSION);
 
-    // Framework expando keys on host or nearest ancestor that has them.
-    function frameworkKeys(el) {
-      var out = [];
-      try {
-        Object.keys(el).forEach(function (k) {
-          if (/^__(ng|react|vue)/.test(k) || k === "__ngContext__") out.push(k);
-        });
-      } catch (e) {}
-      return out;
-    }
-    var mEl = host,
-      mKeys = frameworkKeys(host),
-      guard = 0;
-    while (mKeys.length === 0 && mEl.parentElement && guard++ < 6) {
-      mEl = mEl.parentElement;
-      mKeys = frameworkKeys(mEl);
-    }
-    L.push(
-      "marker el: <" +
-        mEl.tagName.toLowerCase() +
-        "> keys: " +
-        (mKeys.join(",") || "(none found within 6 ancestors)"),
-    );
-
-    // Shallow structural describe: constructor, own keys, prototype methods.
+    // Structural describe: constructor, own keys, prototype methods; recurse
+    // into camera/zoom/pan-ish children so the control surface is visible.
     function describe(o, depth, prefix, seen) {
       if (o == null) return String(o);
       var t = typeof o;
@@ -1214,14 +1173,14 @@
       var s =
         cn +
         " {keys:[" +
-        keys.slice(0, 50).join(",") +
+        keys.slice(0, 60).join(",") +
         "]" +
-        (methods.length ? " methods:[" + methods.slice(0, 50).join(",") + "]" : "") +
+        (methods.length ? " methods:[" + methods.slice(0, 60).join(",") + "]" : "") +
         "}";
       if (depth > 0) {
         keys.forEach(function (k) {
           if (
-            !/cam|view|zoom|scale|center|pos|pan|map|scene|render|control|pixi|app|state|store|transform|offset|coord|bounds|tile/i.test(
+            !/cam|view|zoom|scale|center|pos|pan|map|scene|render|control|pixi|stage|state|store|transform|offset|coord|bounds|tile/i.test(
               k,
             )
           )
@@ -1243,59 +1202,98 @@
       return s;
     }
 
-    // Try to get the Angular (Ivy) component instance.
-    var inst = null;
-    try {
-      if (window.ng && typeof window.ng.getComponent === "function") {
-        inst = window.ng.getComponent(host) || window.ng.getComponent(mEl);
+    var getComp =
+      window.ng && typeof window.ng.getComponent === "function"
+        ? window.ng.getComponent
+        : null;
+    function compOf(el) {
+      if (!getComp) return null;
+      try {
+        return getComp(el) || null;
+      } catch (e) {
+        return null;
       }
-    } catch (e) {
-      L.push("ng.getComponent threw: " + (e && e.message));
     }
 
-    if (!inst) {
-      // Fall back to scanning the Ivy LView array under __ngContext__.
-      var ctx = host.__ngContext__;
-      if (ctx == null) ctx = mEl.__ngContext__;
-      L.push(
-        "__ngContext__: " +
-          (ctx == null
-            ? "absent"
-            : typeof ctx +
-              (Array.isArray(ctx) ? " (LView len=" + ctx.length + ")" : " = " + ctx)),
-      );
-      if (Array.isArray(ctx)) {
-        ctx.forEach(function (v, i) {
-          if (v && typeof v === "object" && !Array.isArray(v)) {
-            var cn = v.constructor && v.constructor.name;
-            if (
-              cn &&
-              cn !== "Object" &&
-              cn.length < 50 &&
-              /Map|World|Camera|View|Component|Ctrl|Controller|Renderer|Scene|Pixi/i.test(cn)
-            ) {
-              L.push("  LView[" + i + "]: " + cn);
-              if (!inst && /Map|World/i.test(cn)) inst = v;
-            }
-          }
+    // Enumerate component hosts: the host <app-world-map-map> was NOT a
+    // component host (no __ngContext__), so walk the app2 subtree and ask
+    // ng.getComponent(el) on each element -- non-null == a component host.
+    var scanRoot =
+      document.querySelector("app2-router-outlet") ||
+      document.querySelector("app-world-map-base") ||
+      document.body;
+    var els = [scanRoot].concat(
+      Array.prototype.slice.call(scanRoot.querySelectorAll("*"), 0, 600),
+    );
+    var comps = [];
+    var seenInst = [];
+    els.forEach(function (el) {
+      var c = compOf(el);
+      if (c && seenInst.indexOf(c) < 0) {
+        seenInst.push(c);
+        comps.push({
+          tag: el.tagName.toLowerCase(),
+          name: (c.constructor && c.constructor.name) || "?",
+          inst: c,
         });
       }
-    }
+    });
+    L.push("component hosts found: " + comps.length);
+    comps.forEach(function (x) {
+      L.push("  <" + x.tag + "> -> " + x.name);
+    });
 
-    if (inst) {
+    // Deep-describe the map-related component(s).
+    var mapComps = comps.filter(function (x) {
+      return /map|world/i.test(x.name) || /map|world/i.test(x.tag);
+    });
+    if (!mapComps.length && comps.length) mapComps = comps.slice(0, 3);
+    mapComps.forEach(function (x) {
       L.push("");
-      L.push("component instance:");
-      L.push(describe(inst, 2, "  ", []));
-    } else {
-      L.push("component instance: NOT RESOLVED");
+      L.push("### <" + x.tag + "> " + x.name + ":");
+      L.push(describe(x.inst, 3, "  ", []));
+    });
+    if (!comps.length) {
+      L.push("component instance: NOT RESOLVED (ng.getComponent unavailable?)");
     }
 
-    // Canvas + WebGL context info (helps confirm PIXI / raw WebGL).
-    var canv = host.tagName === "CANVAS" ? host : host.querySelector("canvas");
-    if (canv) {
-      L.push(
-        "canvas: " + canv.width + "x" + canv.height + " keys:[" + Object.keys(canv).slice(0, 20).join(",") + "]",
-      );
+    // PIXI probe: hunt for the Application/stage/viewport that actually holds
+    // the camera transform, in case pan/zoom lives outside the component.
+    if (window.PIXI) {
+      try {
+        var shared =
+          window.PIXI.Application &&
+          window.PIXI.Application.prototype &&
+          "n/a";
+        // Look for a pixi-viewport (Viewport) or camera among discovered comps.
+        var viewportLike = [];
+        seenInst.forEach(function (c) {
+          Object.keys(c).forEach(function (k) {
+            var v;
+            try {
+              v = c[k];
+            } catch (e) {
+              return;
+            }
+            if (v && typeof v === "object") {
+              var cn = v.constructor && v.constructor.name;
+              if (
+                cn &&
+                /Viewport|Camera|Stage|Application|Container/i.test(cn) &&
+                viewportLike.indexOf(v) < 0
+              ) {
+                viewportLike.push(v);
+                L.push("");
+                L.push("### PIXI-ish ." + k + " (" + cn + "):");
+                L.push(describe(v, 2, "  ", []));
+              }
+            }
+          });
+        });
+        if (!viewportLike.length) L.push("PIXI: no Viewport/Camera field on comps");
+      } catch (e) {
+        L.push("PIXI probe threw: " + (e && e.message));
+      }
     }
     return L.join("\n");
   }
