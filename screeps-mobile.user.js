@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.6.3
+// @version      0.6.4
 // @description  Mobile UX fixes for screeps.com: touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @match        https://screeps.com/*
 // @run-at       document-idle
@@ -188,6 +188,27 @@
         cancelable: true,
         view: window,
         button: 0,
+        clientX: touch ? touch.clientX : 0,
+        clientY: touch ? touch.clientY : 0,
+      }),
+    );
+  }
+
+  // Synthetic PointerEvent with pointerType "mouse" so components that
+  // handle pointer input (and may ignore pointerType "touch") still react.
+  // buttons: 1 while a drag button is held, 0 on release.
+  function firePointer(type, target, touch, buttons) {
+    if (typeof PointerEvent === "undefined") return;
+    target.dispatchEvent(
+      new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        pointerId: 1,
+        pointerType: "mouse",
+        isPrimary: true,
+        button: type === "pointermove" ? -1 : 0,
+        buttons: buttons,
         clientX: touch ? touch.clientX : 0,
         clientY: touch ? touch.clientY : 0,
       }),
@@ -773,7 +794,9 @@
       if (e.touches.length !== 1) {
         // A second finger (pinch) ends any active pan cleanly.
         if (wmPan) {
-          fireMouse("mouseup", wmPan.target, e.touches[0] || wmPan.last);
+          var et = e.touches[0] || wmPan.last;
+          firePointer("pointerup", wmPan.target, et, 0);
+          fireMouse("mouseup", wmPan.target, et);
           wmPan = null;
         }
         return;
@@ -781,7 +804,11 @@
       if (!(e.target.closest && e.target.closest(WORLD_MAP_SEL))) return;
       var t = e.touches[0];
       wmPan = { target: e.target, x: t.clientX, y: t.clientY, moved: false, last: t };
-      e.preventDefault(); // own the gesture; we synthesize the mouse events
+      e.preventDefault(); // own the gesture; we synthesize the mouse/pointer events
+      // Dispatch pointer + mouse: the old world map uses mouse events; the
+      // alpha map2 uses pointer events (and ignores pointerType "touch"),
+      // so a pointerType:"mouse" event is what drives it.
+      firePointer("pointerdown", e.target, t, 1);
       fireMouse("mousedown", e.target, t);
     },
     { capture: true, passive: false },
@@ -802,6 +829,7 @@
       e.preventDefault(); // no page scroll while panning
       // Drag handlers usually live on document; dispatch on the map target
       // so the event bubbles to both the map element and document.
+      firePointer("pointermove", wmPan.target, t, 1);
       fireMouse("mousemove", wmPan.target, t);
     },
     { capture: true, passive: false },
@@ -810,8 +838,10 @@
   function endWmPan(e) {
     if (!wmPan) return;
     var t = e.changedTouches && e.changedTouches[0];
-    fireMouse("mouseup", wmPan.target, t || wmPan.last);
-    if (!wmPan.moved) fireMouse("click", wmPan.target, t || wmPan.last);
+    var pt = t || wmPan.last;
+    firePointer("pointerup", wmPan.target, pt, 0);
+    fireMouse("mouseup", wmPan.target, pt);
+    if (!wmPan.moved) fireMouse("click", wmPan.target, pt);
     pickerInfo.lastWmPan = wmPan.moved ? "drag" : "tap";
     wmPan = null;
   }
@@ -830,7 +860,7 @@
 
   function dump() {
     var lines = [];
-    lines.push("screeps-mobile-ux 0.6.3");
+    lines.push("screeps-mobile-ux 0.6.4");
     lines.push("zoomFactor: " + zoomFactor().toFixed(2));
     lines.push("ua: " + navigator.userAgent);
     lines.push(
