@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.7.6
+// @version      0.7.7
 // @description  Mobile UX fixes for screeps.com: touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @author       sy-harabi
 // @license      MIT
@@ -36,7 +36,7 @@
 
   // Keep in sync with the @version header above; the dump prints this so the
   // on-screen header never lies about which build is loaded.
-  var SM_VERSION = "0.7.6";
+  var SM_VERSION = "0.7.7";
 
   var CONFIG = {
     // Apply the CSS only on coarse-pointer (touch) devices.
@@ -93,11 +93,21 @@
     // Movement (px) beyond which a world-map touch counts as a drag, not
     // a tap.
     worldMapPanThreshold: 5,
-    // The "alpha" world map (#!/map2) drag-pan could NOT be driven by any
-    // synthetic event (touch/mouse/pointer, 0.6.2-0.6.4); injected events
-    // were misread as a room click. map2 is therefore left untouched, so
-    // this is off (true would only disable pull-to-refresh with no benefit).
-    map2TouchAction: false,
+    // The "alpha" world map (#!/map2) is an app2/Angular + PIXI component.
+    // Synthetic events never drove its drag-pan (0.6.2-0.6.4: misread as a
+    // room click). Instead we call the component's OWN pan/zoom model API
+    // directly (v0.7.7), so no synthetic events are involved and a room
+    // click can never be spoofed. Single finger = pan, two fingers = zoom.
+    map2Pan: true,
+    map2Zoom: true,
+    // Flip pan direction per axis if a finger drag moves the map the wrong
+    // way on your device/orientation.
+    map2InvertX: false,
+    map2InvertY: false,
+    // touch-action:none on the map2 canvas so the browser can't steal the
+    // drag as a scroll / pull-to-refresh before our handler owns it. Tapping
+    // a room still navigates (touch-action doesn't affect taps).
+    map2TouchAction: true,
     // Show a small floating A-/A+ control (bottom-right) to change the whole
     // UI size live. The chosen size persists in localStorage (survives
     // reloads and auto-updates), independent of viewportWidth above.
@@ -150,11 +160,10 @@
         CONFIG.uiScale +
         "; }\n"
       : "") +
-    /* map2 (#!/map2, the "alpha" world map) is left untouched -- its
-     * drag-pan can't be driven by synthetic events (see WORLD_MAP_SEL), so
-     * this touch-action:none rule stays off (map2TouchAction=false) to keep
-     * pull-to-refresh working there. */
-    (CONFIG.map2TouchAction
+    /* map2 (#!/map2, the "alpha" world map): touch-action:none so our own
+     * pan/zoom bridge (section 5c-2) owns the gesture instead of the browser
+     * scrolling / pull-to-refresh. Enabled whenever map2 pan or zoom is on. */
+    (CONFIG.map2TouchAction || CONFIG.map2Pan || CONFIG.map2Zoom
       ? "app-world-map-map, app-world-map-map canvas," +
         " app-world-map-base, app-world-map-base canvas {" +
         " touch-action: none !important; }\n"
@@ -864,6 +873,231 @@
   });
 
   /* ------------------------------------------------------------------ */
+  /* 5c-2. map2 (alpha world map) touch pan + pinch zoom                 */
+  /*                                                                     */
+  /* map2 is an app2/Angular + PIXI component. Synthetic pointer/mouse/  */
+  /* touch events never drove its drag-pan -- they were misread as a     */
+  /* room click, causing accidental navigation (0.6.2-0.6.4). Instead we */
+  /* call the component's OWN model API directly, so NO synthetic events */
+  /* exist and a room click can never be spoofed:                        */
+  /*   BaseComponent.onChangeCenter([x,y]) -> pan (updates URL + model)  */
+  /*   BaseComponent.onChangeScale(scale)  -> zoom                        */
+  /*   MapContainer.setCenter([x,y]) / setScale(s) -> immediate render    */
+  /* The instances are read live via the legacy ng.probe() debug API.    */
+  /* Pixels<->rooms is derived from MapContainer.getBound() at gesture    */
+  /* start, so it is correct at any zoom. A single-finger tap under the   */
+  /* drag threshold is left untouched, so tapping a room still navigates  */
+  /* through the client's native handler.                                */
+  /* ------------------------------------------------------------------ */
+
+  var MAP2_MIN_SCALE = 0.4,
+    MAP2_MAX_SCALE = 5;
+  pickerInfo.lastMap2 = "-"; // diagnostics
+
+  function onMap2() {
+    return (location.hash || "").indexOf("#!/map2") === 0;
+  }
+
+  // Resolve the live map2 component instances via the legacy ng.probe API.
+  function map2Ctx() {
+    if (!window.ng || typeof window.ng.probe !== "function") return null;
+    var base = null,
+      mc = null;
+    try {
+      var baseEl = document.querySelector("app-world-map-base");
+      var d = baseEl && window.ng.probe(baseEl);
+      base = (d && d.componentInstance) || null;
+    } catch (e) {}
+    try {
+      if (base && base.mapRef && base.mapRef.screepsMap)
+        mc = base.mapRef.screepsMap._mapContainer || null;
+      if (!mc) {
+        var mapEl = document.querySelector("app-world-map-map");
+        var dm = mapEl && window.ng.probe(mapEl);
+        var mapComp = dm && dm.componentInstance;
+        if (mapComp && mapComp.screepsMap)
+          mc = mapComp.screepsMap._mapContainer || null;
+      }
+    } catch (e) {}
+    if (!base && !mc) return null;
+    return { base: base, mc: mc };
+  }
+
+  // px-per-room at the current zoom, from the live visible bound. getBound()
+  // returns the room rectangle plus a +2 padding, so the visible span is
+  // (width-2) rooms across _width px.
+  function map2PxPerRoom(mc) {
+    try {
+      var b = mc && mc.getBound();
+      if (!b) return null;
+      var px = [];
+      if (b.width > 2) px.push(mc._width / (b.width - 2));
+      if (b.height > 2) px.push(mc._height / (b.height - 2));
+      if (!px.length) return null;
+      return (
+        px.reduce(function (a, c) {
+          return a + c;
+        }, 0) / px.length
+      );
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function map2Center(ctx) {
+    try {
+      var c = ctx.mc && ctx.mc.getCenter && ctx.mc.getCenter();
+      if (c && c.length === 2) return [c[0], c[1]];
+    } catch (e) {}
+    return null;
+  }
+  function map2Scale(ctx) {
+    try {
+      if (ctx.mc && ctx.mc._scaleSbj) return ctx.mc._scaleSbj.getValue();
+    } catch (e) {}
+    try {
+      if (ctx.base && ctx.base._scaleSbj) return ctx.base._scaleSbj.getValue();
+    } catch (e) {}
+    return null;
+  }
+  function map2SetCenter(ctx, xy) {
+    // Drive the model/URL (base) and force an immediate render (container).
+    try {
+      if (ctx.base && ctx.base.onChangeCenter) ctx.base.onChangeCenter(xy);
+    } catch (e) {}
+    try {
+      if (ctx.mc && ctx.mc.setCenter) ctx.mc.setCenter(xy);
+    } catch (e) {}
+  }
+  function map2SetScale(ctx, s) {
+    try {
+      if (ctx.base && ctx.base.onChangeScale) ctx.base.onChangeScale(s);
+    } catch (e) {}
+    try {
+      if (ctx.mc && ctx.mc.setScale) ctx.mc.setScale(s);
+    } catch (e) {}
+  }
+
+  var m2 = null; // active map2 gesture state
+
+  document.addEventListener(
+    "touchstart",
+    function (e) {
+      if (!CONFIG.map2Pan && !CONFIG.map2Zoom) return;
+      if (!onMap2()) return;
+      if (!(e.target.closest && e.target.closest("app-world-map-base"))) return;
+      var ctx = map2Ctx();
+      if (!ctx) return;
+
+      if (e.touches.length === 2 && CONFIG.map2Zoom) {
+        var a = e.touches[0],
+          b = e.touches[1];
+        m2 = {
+          mode: "pinch",
+          ctx: ctx,
+          startDist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY),
+          startScale: map2Scale(ctx) || 1,
+        };
+        pickerInfo.lastMap2 = "pinch start s=" + m2.startScale;
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      if (e.touches.length === 1 && CONFIG.map2Pan) {
+        var t = e.touches[0];
+        m2 = {
+          mode: "pan",
+          ctx: ctx,
+          x: t.clientX,
+          y: t.clientY,
+          startCenter: map2Center(ctx),
+          pxPerRoom: map2PxPerRoom(ctx.mc),
+          moved: false,
+        };
+        pickerInfo.lastMap2 =
+          "pan start c=" +
+          JSON.stringify(m2.startCenter) +
+          " ppr=" +
+          (m2.pxPerRoom ? m2.pxPerRoom.toFixed(1) : "?");
+        // No preventDefault yet: a tap must still reach the native room-click
+        // handler. We only own the gesture once it becomes a drag.
+      }
+    },
+    { capture: true, passive: false },
+  );
+
+  document.addEventListener(
+    "touchmove",
+    function (e) {
+      if (!m2) return;
+      var ctx = m2.ctx;
+
+      if (m2.mode === "pinch") {
+        if (e.touches.length !== 2) return;
+        e.preventDefault();
+        e.stopPropagation();
+        var a = e.touches[0],
+          b = e.touches[1];
+        var d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+        if (!(m2.startDist > 0)) return;
+        var ratio = CONFIG.invertPinch ? m2.startDist / d : d / m2.startDist;
+        var lo = (ctx.base && ctx.base.MIN_SCALE) || MAP2_MIN_SCALE;
+        var hi = (ctx.base && ctx.base.MAX_SCALE) || MAP2_MAX_SCALE;
+        var s = m2.startScale * ratio;
+        s = Math.round(Math.max(lo, Math.min(hi, s)) * 100) / 100;
+        map2SetScale(ctx, s);
+        pickerInfo.lastMap2 = "pinch s=" + s;
+        return;
+      }
+
+      // pan
+      if (e.touches.length !== 1) return;
+      var t = e.touches[0];
+      var dx = t.clientX - m2.x;
+      var dy = t.clientY - m2.y;
+      if (
+        !m2.moved &&
+        (Math.abs(dx) > CONFIG.worldMapPanThreshold ||
+          Math.abs(dy) > CONFIG.worldMapPanThreshold)
+      ) {
+        m2.moved = true;
+      }
+      if (!m2.moved) return; // still a potential tap; leave it to the client
+      e.preventDefault(); // now a drag: own it (also cancels the native click)
+      e.stopPropagation();
+      if (!m2.startCenter || !m2.pxPerRoom) return;
+      var ppr = m2.pxPerRoom;
+      var sx = CONFIG.map2InvertX ? -dx : dx;
+      var sy = CONFIG.map2InvertY ? -dy : dy;
+      // Drag right -> reveal content to the left -> center moves left.
+      var nx = m2.startCenter[0] - sx / ppr;
+      var ny = m2.startCenter[1] - sy / ppr;
+      map2SetCenter(ctx, [nx, ny]);
+      pickerInfo.lastMap2 =
+        "pan d=" +
+        Math.round(dx) +
+        "," +
+        Math.round(dy) +
+        " -> " +
+        nx.toFixed(1) +
+        "," +
+        ny.toFixed(1);
+    },
+    { capture: true, passive: false },
+  );
+
+  function endMap2() {
+    if (!m2) return;
+    if (m2.mode === "pan") pickerInfo.lastMap2 = m2.moved ? "pan end" : "tap";
+    m2 = null;
+  }
+  document.addEventListener("touchend", endMap2, { capture: true, passive: true });
+  document.addEventListener("touchcancel", endMap2, {
+    capture: true,
+    passive: true,
+  });
+
+  /* ------------------------------------------------------------------ */
   /* 5d. Floating UI-size control (A- / A+)                              */
   /*                                                                     */
   /* A small bottom-right button opens an A- / scale / A+ / reset row.   */
@@ -1109,6 +1343,12 @@
         (pickerInfo.lastWmPan || "-") +
         " container=" +
         (document.querySelector(WORLD_MAP_SEL) ? "yes" : "no"),
+    );
+    lines.push(
+      "map2: " +
+        (pickerInfo.lastMap2 || "-") +
+        " onMap2=" +
+        (onMap2() ? "yes" : "no"),
     );
 
     var ctrl = panelCtrl();
