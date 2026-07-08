@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.7.4
+// @version      0.7.5
 // @description  Mobile UX fixes for screeps.com: touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @author       sy-harabi
 // @license      MIT
@@ -949,7 +949,7 @@
 
   function dump() {
     var lines = [];
-    lines.push("screeps-mobile-ux 0.7.2");
+    lines.push("screeps-mobile-ux 0.7.5");
     lines.push(
       "uiSize: width=" +
         smCurrentWidth() +
@@ -1202,26 +1202,41 @@
       return s;
     }
 
-    var getComp =
-      window.ng && typeof window.ng.getComponent === "function"
-        ? window.ng.getComponent
-        : null;
-    function compOf(el) {
-      if (!getComp) return null;
+    // This build's `ng` global has probe/coreTokens but NOT getComponent, so
+    // it is the LEGACY debug API: ng.probe(el) -> DebugElement with
+    // .componentInstance / .context / .injector / .providerTokens.
+    var ngObj = window.ng || {};
+    function probeOf(el) {
       try {
-        return getComp(el) || null;
-      } catch (e) {
-        return null;
-      }
+        if (typeof ngObj.probe === "function") return ngObj.probe(el) || null;
+      } catch (e) {}
+      return null;
+    }
+    function compOf(el) {
+      try {
+        if (typeof ngObj.getComponent === "function") {
+          var c = ngObj.getComponent(el);
+          if (c) return c;
+        }
+      } catch (e) {}
+      var d = probeOf(el);
+      if (d)
+        return (
+          d.componentInstance ||
+          (d.context && (d.context.$implicit || d.context)) ||
+          null
+        );
+      return null;
     }
 
-    // Enumerate component hosts: the host <app-world-map-map> was NOT a
-    // component host (no __ngContext__), so walk the app2 subtree and ask
-    // ng.getComponent(el) on each element -- non-null == a component host.
+    // Walk the app2 subtree; ng.probe(el).componentInstance identifies hosts.
     var scanRoot =
       document.querySelector("app2-router-outlet") ||
       document.querySelector("app-world-map-base") ||
       document.body;
+    var host =
+      document.querySelector("app-world-map-map") ||
+      document.querySelector("app-world-map-base");
     var els = [scanRoot].concat(
       Array.prototype.slice.call(scanRoot.querySelectorAll("*"), 0, 600),
     );
@@ -1243,29 +1258,59 @@
       L.push("  <" + x.tag + "> -> " + x.name);
     });
 
-    // Deep-describe the map-related component(s).
+    // Legacy DebugElement introspection on the map host chain: exposes the
+    // component instance, its template context, and the injected services
+    // (providerTokens) -- the camera/viewport may live in a service.
+    [host, document.querySelector("app-world-map-base"), scanRoot].forEach(
+      function (el) {
+        if (!el) return;
+        var d = probeOf(el);
+        var tag = "<" + el.tagName.toLowerCase() + ">";
+        if (!d) {
+          L.push("probe(" + tag + "): null");
+          return;
+        }
+        L.push("");
+        L.push("### probe(" + tag + "):");
+        L.push(
+          "  componentInstance: " +
+            (d.componentInstance ? describe(d.componentInstance, 3, "    ", []) : "null"),
+        );
+        if (d.providerTokens && d.providerTokens.length) {
+          L.push(
+            "  providerTokens: " +
+              d.providerTokens
+                .map(function (t) {
+                  return (t && t.name) || String(t);
+                })
+                .slice(0, 50)
+                .join(","),
+          );
+        }
+        if (d.context && d.context !== d.componentInstance) {
+          L.push("  context: " + describe(d.context, 2, "    ", []));
+        }
+      },
+    );
+
+    // Deep-describe any map-related component instances we discovered.
     var mapComps = comps.filter(function (x) {
-      return /map|world/i.test(x.name) || /map|world/i.test(x.tag);
+      return /map|world|camera/i.test(x.name) || /map|world/i.test(x.tag);
     });
-    if (!mapComps.length && comps.length) mapComps = comps.slice(0, 3);
+    if (!mapComps.length && comps.length) mapComps = comps.slice(0, 4);
     mapComps.forEach(function (x) {
       L.push("");
       L.push("### <" + x.tag + "> " + x.name + ":");
       L.push(describe(x.inst, 3, "  ", []));
     });
     if (!comps.length) {
-      L.push("component instance: NOT RESOLVED (ng.getComponent unavailable?)");
+      L.push("component instance: NOT RESOLVED (ng.probe returned nothing)");
     }
 
-    // PIXI probe: hunt for the Application/stage/viewport that actually holds
-    // the camera transform, in case pan/zoom lives outside the component.
+    // PIXI probe: hunt for the Application/stage/viewport/camera holding the
+    // pan/zoom transform among all discovered instances (comps + contexts).
     if (window.PIXI) {
       try {
-        var shared =
-          window.PIXI.Application &&
-          window.PIXI.Application.prototype &&
-          "n/a";
-        // Look for a pixi-viewport (Viewport) or camera among discovered comps.
         var viewportLike = [];
         seenInst.forEach(function (c) {
           Object.keys(c).forEach(function (k) {
@@ -1279,7 +1324,7 @@
               var cn = v.constructor && v.constructor.name;
               if (
                 cn &&
-                /Viewport|Camera|Stage|Application|Container/i.test(cn) &&
+                /Viewport|Camera|Stage|Application|Container|Renderer|World/i.test(cn) &&
                 viewportLike.indexOf(v) < 0
               ) {
                 viewportLike.push(v);
