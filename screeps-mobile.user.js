@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.7.0
+// @version      0.7.1
 // @description  Mobile UX fixes for screeps.com: touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @author       sy-harabi
 // @license      MIT
@@ -123,9 +123,13 @@
     /* Resize handle: visible grip so it is discoverable by touch.
      * (Kept to the right side: the left part of the strip is the tab row.) */
     ".editor-panel .resize-handle::after {" +
-    ' content: ""; position: absolute; top: 5px; right: 110px;' +
-    " width: 64px; height: 6px; border-radius: 3px;" +
-    " background: rgba(255,255,255,0.28); pointer-events: none; }\n" +
+    ' content: "\\21D5";' + // up-down double arrow: reads as a drag-to-resize control
+    " position: absolute; top: 1px; right: 122px;" +
+    " width: 40px; height: 20px; line-height: 20px; text-align: center;" +
+    " font-size: 16px; color: rgba(255,255,255,0.62);" +
+    " background: rgba(255,255,255,0.13);" +
+    " border: 1px solid rgba(255,255,255,0.22); border-radius: 11px;" +
+    " pointer-events: none; }\n" +
     /* Slightly larger zoom buttons in the room view. */
     "section.room .left-controls .zoom-controls .md-button {" +
     " width: 40px; height: 40px; line-height: 40px; }\n" +
@@ -937,7 +941,7 @@
 
   function dump() {
     var lines = [];
-    lines.push("screeps-mobile-ux 0.7.0");
+    lines.push("screeps-mobile-ux 0.7.1");
     lines.push(
       "uiSize: width=" +
         smCurrentWidth() +

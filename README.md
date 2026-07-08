@@ -87,7 +87,8 @@ same.
 - The tile picker appears when the tapped tile holds **more than one** object
   (client behavior: exactly one object is selected directly).
 - The resize handle strip doubles as the tab row on its left side; drag from
-  the grip bar on the right side of the panel's top edge.
+  the **⇕** grip chip on the right side of the panel's top edge (double-tap it
+  to cycle the height presets).
 - Tuned on Android + Firefox. `viewportWidth` (default `570`, ~2.25×) is
   aggressive; on other screen sizes adjust it in the `CONFIG` block.
 
