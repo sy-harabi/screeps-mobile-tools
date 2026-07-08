@@ -1,8 +1,10 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.6.5
+// @version      0.6.6
 // @description  Mobile UX fixes for screeps.com: touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
+// @author       sy-harabi
+// @license      MIT
 // @match        https://screeps.com/*
 // @run-at       document-idle
 // @grant        none
@@ -830,7 +832,7 @@
 
   function dump() {
     var lines = [];
-    lines.push("screeps-mobile-ux 0.6.5");
+    lines.push("screeps-mobile-ux 0.6.6");
     lines.push("zoomFactor: " + zoomFactor().toFixed(2));
     lines.push("ua: " + navigator.userAgent);
     lines.push(

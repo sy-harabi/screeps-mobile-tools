@@ -82,3 +82,10 @@ same.
   (client behavior: exactly one object is selected directly).
 - The resize handle strip doubles as the tab row on its left side; drag from
   the grip bar on the right side of the panel's top edge.
+- Tuned on Android + Firefox. `viewportWidth` (default `570`, ~2.25×) is
+  aggressive; on other screen sizes adjust it in the `CONFIG` block.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Anyone may install, use, modify, and
+redistribute it.
