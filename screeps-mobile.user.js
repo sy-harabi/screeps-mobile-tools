@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.7.7
+// @version      0.7.8
 // @description  Mobile UX fixes for screeps.com: touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @author       sy-harabi
 // @license      MIT
@@ -36,7 +36,7 @@
 
   // Keep in sync with the @version header above; the dump prints this so the
   // on-screen header never lies about which build is loaded.
-  var SM_VERSION = "0.7.7";
+  var SM_VERSION = "0.7.8";
 
   var CONFIG = {
     // Apply the CSS only on coarse-pointer (touch) devices.
@@ -960,22 +960,37 @@
     } catch (e) {}
     return null;
   }
-  function map2SetCenter(ctx, xy) {
-    // Drive the model/URL (base) and force an immediate render (container).
+  // After moving/zooming the container, re-run the room/stat/user draw
+  // pipeline for the new view. Normally the map emits its bound and
+  // BaseComponent.onBound() redraws; we bypass that path, so drive it
+  // ourselves with the container's live bound ({x,y,width,height}).
+  function map2Redraw(ctx) {
     try {
-      if (ctx.base && ctx.base.onChangeCenter) ctx.base.onChangeCenter(xy);
+      if (ctx.base && ctx.base.onBound && ctx.mc && ctx.mc.getBound) {
+        var b = ctx.mc.getBound();
+        if (b) ctx.base.onBound(b);
+      }
     } catch (e) {}
+  }
+  function map2SetCenter(ctx, xy) {
+    // setCenter takes an array [x,y] (matches getCenter). We deliberately do
+    // NOT call base.onChangeCenter: its source stores center as a joined
+    // STRING (and its route update is commented out), which would corrupt
+    // the container's numeric center if fed back.
     try {
       if (ctx.mc && ctx.mc.setCenter) ctx.mc.setCenter(xy);
     } catch (e) {}
+    map2Redraw(ctx);
   }
   function map2SetScale(ctx, s) {
     try {
-      if (ctx.base && ctx.base.onChangeScale) ctx.base.onChangeScale(s);
-    } catch (e) {}
-    try {
       if (ctx.mc && ctx.mc.setScale) ctx.mc.setScale(s);
     } catch (e) {}
+    // Keep the settings panel's scale % in sync (numeric, no corruption).
+    try {
+      if (ctx.base && ctx.base.onChangeScale) ctx.base.onChangeScale(s);
+    } catch (e) {}
+    map2Redraw(ctx);
   }
 
   var m2 = null; // active map2 gesture state
