@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.4.1
+// @version      0.5.0
 // @description  Mobile UX fixes for screeps.com: touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @match        https://screeps.com/*
 // @run-at       document-idle
@@ -41,19 +41,33 @@
     heightPresets: [0.35, 0.6, 0.85],
     doubleTapMs: 400,
     // The site ships <meta name="viewport" content="width=1280">, which is
-    // why everything is tiny on phones. 850 renders the whole UI ~1.5x
-    // larger (1280/850); null = leave the site default untouched.
-    // Raise back toward 980 if the layout breaks at 850.
-    viewportWidth: 850,
+    // why everything is tiny on phones. Smaller width = larger UI
+    // (1280/width). 570 renders the whole UI ~2.25x the site default
+    // (~1.5x larger than the previous 850). null = site default.
+    // Raise this if the layout breaks (values well below 980 are
+    // aggressive: 570 -> 720 -> 850 -> 980 progressively tames it).
+    viewportWidth: 570,
     // Extra zoom for the console/Memory panes and the room aside panel
     // (game field and script editor are left untouched). 1 = off.
-    // With viewportWidth already ~1.5x, keep this at 1 so every pane
-    // scales uniformly (otherwise those panes would double-scale).
+    // With viewportWidth already enlarging everything, keep this at 1 so
+    // every pane scales uniformly (otherwise those panes double-scale).
     uiScale: 1,
     // Lock the browser's page zoom (user-scalable=no) so the UI can never
-    // be pinch-zoomed. The map is still zoomable via the client's own
-    // +/- zoom controls. Requires viewportWidth to be set.
+    // be pinch-zoomed. The map stays zoomable via pinchZoomMap below and
+    // the client's own +/- controls. Requires viewportWidth to be set.
     lockZoom: true,
+    // Pinch-to-zoom the map (room game field / world map) with two fingers.
+    // Because page zoom is locked, we translate the pinch into the client's
+    // own zoom by dispatching synthetic wheel events at the pinch centroid,
+    // so only the map zooms and the UI stays fixed.
+    pinchZoomMap: true,
+    // Pinch travel (px) per emitted wheel tick; smaller = more sensitive.
+    pinchStepPx: 28,
+    // Magnitude of each synthetic wheel tick's deltaY (client zoom step).
+    wheelDelta: 100,
+    // Set true if pinch-out zooms OUT instead of in (client wheel sign
+    // differs); flips the zoom direction.
+    invertPinch: false,
   };
 
   /* ------------------------------------------------------------------ */
@@ -495,12 +509,106 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /* 5b. Pinch-to-zoom the map (room game field / world map)             */
+  /*                                                                     */
+  /* Page zoom is locked (user-scalable=no), so a two-finger pinch over  */
+  /* the map is translated into the client's OWN zoom by dispatching     */
+  /* synthetic wheel events at the pinch centroid. Result: only the map  */
+  /* zooms; the surrounding UI stays fixed. The client zooms the room on */
+  /* wheel (deltaY<0 = zoom in on the standard client build); flip via   */
+  /* CONFIG.invertPinch if a build inverts the sign.                     */
+  /* ------------------------------------------------------------------ */
+
+  var MAP_ZOOM_SEL =
+    "section.room .game-field-container, section.world-map .map-container";
+  var pinch = null; // { d, accum } while a two-finger pinch is active
+  pickerInfo.lastPinch = "-"; // diagnostics
+
+  function touchDist(a, b) {
+    return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  }
+
+  function fireWheel(x, y, deltaY) {
+    var target =
+      document.elementFromPoint(x, y) || document.querySelector(MAP_ZOOM_SEL);
+    if (!target) return;
+    target.dispatchEvent(
+      new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: x,
+        clientY: y,
+        deltaX: 0,
+        deltaY: deltaY,
+        deltaMode: 0,
+      }),
+    );
+  }
+
+  document.addEventListener(
+    "touchstart",
+    function (e) {
+      if (!CONFIG.pinchZoomMap) return;
+      if (e.touches.length !== 2) {
+        pinch = null;
+        return;
+      }
+      if (!(e.target.closest && e.target.closest(MAP_ZOOM_SEL))) return;
+      pinch = { d: touchDist(e.touches[0], e.touches[1]), accum: 0 };
+      // Own the gesture: no client pan, no browser default.
+      e.preventDefault();
+      e.stopPropagation();
+    },
+    { capture: true, passive: false },
+  );
+
+  document.addEventListener(
+    "touchmove",
+    function (e) {
+      if (!pinch || e.touches.length !== 2) return;
+      e.preventDefault();
+      e.stopPropagation();
+      var a = e.touches[0],
+        b = e.touches[1];
+      var nd = touchDist(a, b);
+      var cx = (a.clientX + b.clientX) / 2;
+      var cy = (a.clientY + b.clientY) / 2;
+      pinch.accum += nd - pinch.d; // fingers apart (+) = zoom in
+      pinch.d = nd;
+      pickerInfo.lastPinch = Math.round(nd) + "px acc=" + Math.round(pinch.accum);
+      var step = CONFIG.pinchStepPx;
+      while (Math.abs(pinch.accum) >= step) {
+        var zoomIn = pinch.accum > 0;
+        pinch.accum += zoomIn ? -step : step;
+        var dir = zoomIn ? -1 : 1;
+        if (CONFIG.invertPinch) dir = -dir;
+        fireWheel(cx, cy, dir * CONFIG.wheelDelta);
+      }
+    },
+    { capture: true, passive: false },
+  );
+
+  function endPinch(e) {
+    if (!pinch) return;
+    if (!e.touches || e.touches.length < 2) pinch = null;
+  }
+  document.addEventListener("touchend", endPinch, {
+    capture: true,
+    passive: true,
+  });
+  document.addEventListener("touchcancel", endPinch, {
+    capture: true,
+    passive: true,
+  });
+
+  /* ------------------------------------------------------------------ */
   /* 6. Diagnostics: window.__smDump() or triple-tap the navbar logo     */
   /* ------------------------------------------------------------------ */
 
   function dump() {
     var lines = [];
-    lines.push("screeps-mobile-ux 0.4.1");
+    lines.push("screeps-mobile-ux 0.5.0");
     lines.push("zoomFactor: " + zoomFactor().toFixed(2));
     lines.push("ua: " + navigator.userAgent);
     lines.push(
@@ -601,6 +709,7 @@
         " sheet=" +
         (document.getElementById("sm-tile-picker") ? "visible" : "hidden"),
     );
+    lines.push("pinch: " + pickerInfo.lastPinch);
 
     var ctrl = panelCtrl();
     lines.push(

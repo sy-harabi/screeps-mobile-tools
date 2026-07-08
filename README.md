@@ -7,8 +7,9 @@ Userscript that fixes the worst mobile UX problems of the screeps.com web client
 | Problem | Fix |
 | --- | --- |
 | Can't pick an object when several share a tile | v0.2: independent bottom-sheet picker. A tap on the room grid is converted to tile coordinates directly (no dependency on the client's popup); if the tile holds 2+ objects, a bottom bar with large buttons appears — tap one to select it. The client's own `.view-popup` is also restyled/clamped as a secondary path. |
-| Whole UI too small | The site forces a 1280px layout viewport; the script sets it to 850 (`viewportWidth`), rendering the whole UI ~1.5× larger. `uiScale` (extra zoom for the console/Memory/aside panes) defaults to `1` now, so every pane scales uniformly from the viewport width. |
-| Accidentally pinch-zooming the whole UI | v0.4 locks the browser's page zoom (`lockZoom` → `user-scalable=no`), so the UI can never be pinch-zoomed and can't get "stuck" zoomed in. The **map is still zoomable**, via the client's own +/- zoom controls (enlarged for touch). The earlier floating ⛶ zoom-reset button is gone — with page zoom locked there is nothing to reset. |
+| Whole UI too small | The site forces a 1280px layout viewport; the script sets it to 570 (`viewportWidth`), rendering the whole UI ~2.25× larger. Smaller `viewportWidth` = larger UI; raise it if the layout breaks. `uiScale` (extra zoom for the console/Memory/aside panes) defaults to `1`, so every pane scales uniformly from the viewport width. |
+| Accidentally pinch-zooming the whole UI | v0.4 locks the browser's page zoom (`lockZoom` → `user-scalable=no`), so the UI can never be pinch-zoomed and can't get "stuck" zoomed in. The earlier floating ⛶ zoom-reset button is gone — with page zoom locked there is nothing to reset. |
+| Pinching only zoomed the whole page, not the map | v0.5 (`pinchZoomMap`): a two-finger pinch over the room game field / world map is translated into the client's own zoom (synthetic wheel events at the pinch centroid), so **only the map zooms while the UI stays fixed**. The client's +/- zoom controls (enlarged for touch) still work too. |
 | Can't resize the Script/Console/Memory panel by touch | The client's resize handle only listens to mouse events. The script bridges touch drags to synthetic mouse events, so dragging the top strip of the panel resizes it (height persists via the client's own localStorage key). Double-tap the handle to cycle 35% / 60% / 85% height presets. |
 | Top-left buttons (burger/logo vs World/overview) overlap | On narrow screens the navbar's right-side resource/CPU indicators wrap it to a second row, which collides with the room view's left controls. The script hides those indicators on touch devices so the navbar stays a single 42px row. |
 
@@ -46,16 +47,21 @@ Edit the `CONFIG` block at the top of the script:
 - `touchOnly` — CSS applies only on touch devices (`pointer: coarse`). Set
   `false` to test on desktop.
 - `heightPresets` — panel height fractions cycled by double-tapping the handle.
-- `viewportWidth` — layout viewport width (site default 1280). Default `850`
-  (~1.5× larger UI, 1280/850). Lower values enlarge further; the layout is
-  unverified below ~980, so raise it back toward 980 if anything breaks.
+- `viewportWidth` — layout viewport width (site default 1280). Default `570`
+  (~2.25× larger UI, 1280/570). Smaller = larger UI; the layout is aggressive
+  well below ~980, so raise it (570 → 720 → 850 → 980) if anything breaks.
   `null` restores the site default.
 - `uiScale` — extra zoom for console/Memory panes and the aside panel.
   Default `1` (off). Only raise this if you want those panes larger than the
-  rest of the UI; with `viewportWidth` already at 850 the whole UI is ~1.5×.
+  rest of the UI; `viewportWidth` already enlarges everything uniformly.
 - `lockZoom` — when `true` (default), the browser's page zoom is disabled
   (`user-scalable=no`) so the UI cannot be pinch-zoomed. The map still zooms
-  via the client's own +/- controls. Requires `viewportWidth` to be set.
+  via `pinchZoomMap` and the client's +/- controls. Requires `viewportWidth`.
+- `pinchZoomMap` — when `true` (default), a two-finger pinch over the map is
+  bridged to the client's own zoom (synthetic wheel events), so only the map
+  zooms, not the UI. Tuning: `pinchStepPx` (pinch travel per wheel tick,
+  smaller = more sensitive), `wheelDelta` (client zoom step per tick),
+  `invertPinch` (set `true` if pinch-out zooms out instead of in).
 
 ## Diagnostics
 
