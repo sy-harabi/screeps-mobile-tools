@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.5.0
+// @version      0.5.1
 // @description  Mobile UX fixes for screeps.com: touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @match        https://screeps.com/*
 // @run-at       document-idle
@@ -68,6 +68,17 @@
     // Set true if pinch-out zooms OUT instead of in (client wheel sign
     // differs); flips the zoom direction.
     invertPinch: false,
+    // Same-tile object picker. When 2+ objects share a tapped tile the
+    // client shows a tiny .view-popup list that is hard to tap (and, on
+    // some devices, whose items don't select at all). popupPicker mirrors
+    // that list into a large bottom-sheet of buttons; tapping a button
+    // forwards a click to the client's own list item, so selection reuses
+    // the client's handler and needs no tile coordinates (zoom-safe).
+    popupPicker: true,
+    // The older independent picker that recomputes the tile from tap
+    // coordinates. It breaks when the map is zoomed (wrong tile), so it is
+    // off by default; popupPicker supersedes it.
+    coordPicker: false,
   };
 
   /* ------------------------------------------------------------------ */
@@ -270,17 +281,26 @@
     });
   }
 
+  function findPopup(node) {
+    if (node.nodeType !== 1) return null;
+    if (node.matches && node.matches(".view-popup")) return node;
+    return node.querySelector && node.querySelector(".view-popup");
+  }
+
   new MutationObserver(function (mutations) {
     for (var i = 0; i < mutations.length; i++) {
-      var added = mutations[i].addedNodes;
-      for (var j = 0; j < added.length; j++) {
-        var node = added[j];
-        if (node.nodeType !== 1) continue;
-        var pop =
-          node.matches && node.matches(".view-popup")
-            ? node
-            : node.querySelector && node.querySelector(".view-popup");
-        if (pop) clampIntoView(pop);
+      var m = mutations[i];
+      for (var j = 0; j < m.addedNodes.length; j++) {
+        var pop = findPopup(m.addedNodes[j]);
+        if (pop) {
+          clampIntoView(pop);
+          if (CONFIG.popupPicker) mirrorPopupToSheet(pop);
+        }
+      }
+      // When the client removes its popup (selection made or tapped away),
+      // tear down the mirrored sheet so the two stay in sync.
+      for (var k = 0; k < m.removedNodes.length; k++) {
+        if (findPopup(m.removedNodes[k])) onPopupGone();
       }
     }
   }).observe(document.body, { childList: true, subtree: true });
@@ -359,6 +379,7 @@
       if (!roomTap) return;
       var wasTap = !roomTap.moved;
       roomTap = null;
+      if (!CONFIG.coordPicker) return; // popupPicker supersedes this path
       if (!wasTap || e.changedTouches.length !== 1) return;
       var layer = e.target.closest && e.target.closest(".cursor-layer");
       if (!layer) return;
@@ -464,6 +485,107 @@
       "background:transparent;border:1px solid #555;border-radius:6px;" +
       "margin-left:auto;";
     close.addEventListener("click", hideSheet);
+    wrap.appendChild(close);
+    document.body.appendChild(wrap);
+    pinToVisualBottom(wrap);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 4b. Popup-driven picker (default): mirror the client's .view-popup  */
+  /*                                                                     */
+  /* The client already lists the tile's objects in .view-popup and      */
+  /* already knows which tile was tapped (no coordinate math, zoom-safe).*/
+  /* We hide that tiny list and show a large bottom sheet of buttons;    */
+  /* each button forwards a synthetic click to the matching client <li>, */
+  /* so selection runs through the client's OWN handler. A programmatic  */
+  /* click also bypasses the touch layer that was swallowing item taps.  */
+  /* ------------------------------------------------------------------ */
+
+  var activePopup = null; // the client .view-popup currently mirrored
+
+  function popupLis(pop) {
+    return Array.prototype.slice.call(pop.querySelectorAll("ul li"));
+  }
+
+  function clickLi(li) {
+    // Cover click-based (Angular ng-click) and mousedown/up-based handlers.
+    ["mousedown", "mouseup", "click"].forEach(function (type) {
+      li.dispatchEvent(
+        new MouseEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          button: 0,
+        }),
+      );
+    });
+  }
+
+  function onPopupGone() {
+    hideSheet();
+    activePopup = null;
+  }
+
+  function dismissPopup() {
+    hideSheet();
+    if (activePopup && activePopup.parentNode) activePopup.remove();
+    activePopup = null;
+  }
+
+  function mirrorPopupToSheet(pop) {
+    // The <li> items may render a frame after the popup node is inserted.
+    var tries = 0;
+    (function attempt() {
+      var items = popupLis(pop);
+      pickerInfo.lastStack = items.length;
+      if (items.length >= 2) {
+        activePopup = pop;
+        pop.style.visibility = "hidden"; // keep in DOM (handlers stay live)
+        renderSheetFromLis(items);
+      } else if (items.length === 0 && tries++ < 3 && pop.parentNode) {
+        requestAnimationFrame(attempt); // wait for Angular to fill the list
+      }
+      // items === 1: client selects directly; nothing to mirror.
+    })();
+  }
+
+  function renderSheetFromLis(items) {
+    hideSheet();
+    var vw = window.visualViewport
+      ? window.visualViewport.width
+      : window.innerWidth;
+    var fs = Math.max(14, Math.round(vw / 34));
+    var wrap = document.createElement("div");
+    wrap.id = "sm-tile-picker";
+    wrap.style.cssText =
+      "position:fixed;left:0;right:0;bottom:0;z-index:9998;" +
+      "display:flex;align-items:stretch;gap:8px;padding:10px;" +
+      "background:rgba(22,22,22,0.96);border-top:1px solid #555;" +
+      "overflow-x:auto;-webkit-overflow-scrolling:touch;" +
+      "font-size:" +
+      fs +
+      "px;";
+    items.forEach(function (li) {
+      var label = (li.textContent || "").replace(/\s+/g, " ").trim() || "object";
+      var btn = document.createElement("button");
+      btn.textContent = label;
+      btn.style.cssText =
+        "flex:0 0 auto;padding:0.55em 0.9em;font-size:1em;" +
+        "color:#eee;border-radius:6px;white-space:nowrap;" +
+        "background:#3a3a3a;border:1px solid #666;";
+      btn.addEventListener("click", function () {
+        clickLi(li); // let the client select via its own handler
+        dismissPopup();
+      });
+      wrap.appendChild(btn);
+    });
+    var close = document.createElement("button");
+    close.textContent = "✕";
+    close.style.cssText =
+      "flex:0 0 auto;padding:0.55em 0.9em;font-size:1em;color:#aaa;" +
+      "background:transparent;border:1px solid #555;border-radius:6px;" +
+      "margin-left:auto;";
+    close.addEventListener("click", dismissPopup);
     wrap.appendChild(close);
     document.body.appendChild(wrap);
     pinToVisualBottom(wrap);
@@ -608,7 +730,7 @@
 
   function dump() {
     var lines = [];
-    lines.push("screeps-mobile-ux 0.5.0");
+    lines.push("screeps-mobile-ux 0.5.1");
     lines.push("zoomFactor: " + zoomFactor().toFixed(2));
     lines.push("ua: " + navigator.userAgent);
     lines.push(
