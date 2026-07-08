@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.6.0
+// @version      0.6.1
 // @description  Mobile UX fixes for screeps.com: touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @match        https://screeps.com/*
 // @run-at       document-idle
@@ -810,7 +810,7 @@
 
   function dump() {
     var lines = [];
-    lines.push("screeps-mobile-ux 0.6.0");
+    lines.push("screeps-mobile-ux 0.6.1");
     lines.push("zoomFactor: " + zoomFactor().toFixed(2));
     lines.push("ua: " + navigator.userAgent);
     lines.push(
@@ -861,6 +861,47 @@
           Math.round(r.height),
       );
     });
+
+    // Map probe: identify the current map view (map vs map2) and the
+    // container/canvas under it so pan/zoom bridges can target it.
+    function desc(el) {
+      var cls =
+        el && typeof el.className === "string" && el.className.trim()
+          ? "." + el.className.trim().split(/\s+/).slice(0, 3).join(".")
+          : "";
+      return el ? el.tagName.toLowerCase() + cls : "(none)";
+    }
+    lines.push("hash: " + location.hash);
+    var sections = Array.prototype.slice.call(
+      document.querySelectorAll("section"),
+    );
+    lines.push(
+      "sections: " +
+        (sections.map(desc).join(", ") || "(none)"),
+    );
+    var cx = Math.round(window.innerWidth / 2);
+    var cy = Math.round(window.innerHeight / 2);
+    lines.push(
+      "at-center(" +
+        cx +
+        "," +
+        cy +
+        "): " +
+        document.elementsFromPoint(cx, cy).slice(0, 6).map(desc).join(" | "),
+    );
+    var canv = document.querySelector("section canvas") || document.querySelector("canvas");
+    if (canv) {
+      var chain = [],
+        n = canv,
+        guard = 0;
+      while (n && n !== document.body && guard++ < 8) {
+        chain.push(desc(n));
+        n = n.parentElement;
+      }
+      lines.push("canvas chain: " + chain.join(" < "));
+    } else {
+      lines.push("canvas: (none)");
+    }
 
     // What is stacked in the top-left corner (overlap diagnosis).
     [
