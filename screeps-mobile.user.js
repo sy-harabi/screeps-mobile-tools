@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.7.2
+// @version      0.7.3
 // @description  Mobile UX fixes for screeps.com: touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @author       sy-harabi
 // @license      MIT
@@ -1112,7 +1112,192 @@
       "resize panel ctrl: " +
         (ctrl ? "ok, height=" + ctrl.ctrl.getHeight() : "none"),
     );
+
+    // map2 (alpha world map) component probe -- only meaningful on #!/map2.
+    try {
+      lines.push("");
+      lines.push(map2Probe());
+    } catch (err) {
+      lines.push("map2 probe ERROR: " + (err && err.message));
+    }
     return lines.join("\n");
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* map2 probe: reconnaissance for the alpha-map pan/zoom bridge.       */
+  /*                                                                     */
+  /* map2 (#!/map2) is an app2 WebGL component (app-world-map-map) built */
+  /* on a newer framework than the old client's AngularJS. Synthetic     */
+  /* events never worked (0.6.2-0.6.4). The plan is to drive its own     */
+  /* pan/zoom API directly, which first needs to know: which framework,  */
+  /* the component instance, and which of its props/methods move the     */
+  /* camera. This probe dumps exactly that so it can be read off-device. */
+  /* Open #!/map2 first, then triple-tap the burger (or call __smDump).  */
+  /* ------------------------------------------------------------------ */
+  function map2Probe() {
+    var L = ["=== map2 probe ==="];
+    L.push("hash: " + location.hash);
+
+    // Which framework(s) are present as globals.
+    var globs = [];
+    [
+      "ng",
+      "angular",
+      "PIXI",
+      "app",
+      "ngDevMode",
+      "getAllAngularRootElements",
+      "Reflect",
+    ].forEach(function (k) {
+      if (window[k] !== undefined) globs.push(k + ":" + typeof window[k]);
+    });
+    L.push("globals: " + (globs.join(", ") || "(none)"));
+
+    var host =
+      document.querySelector("app-world-map-map") ||
+      document.querySelector("app-world-map-base") ||
+      document.querySelector("[class*='world-map'] canvas") ||
+      document.querySelector("section canvas");
+    if (!host) {
+      L.push("host: NOT FOUND -- open #!/map2 and re-run this dump.");
+      return L.join("\n");
+    }
+    L.push("host: <" + host.tagName.toLowerCase() + ">");
+
+    // Framework expando keys on host or nearest ancestor that has them.
+    function frameworkKeys(el) {
+      var out = [];
+      try {
+        Object.keys(el).forEach(function (k) {
+          if (/^__(ng|react|vue)/.test(k) || k === "__ngContext__") out.push(k);
+        });
+      } catch (e) {}
+      return out;
+    }
+    var mEl = host,
+      mKeys = frameworkKeys(host),
+      guard = 0;
+    while (mKeys.length === 0 && mEl.parentElement && guard++ < 6) {
+      mEl = mEl.parentElement;
+      mKeys = frameworkKeys(mEl);
+    }
+    L.push(
+      "marker el: <" +
+        mEl.tagName.toLowerCase() +
+        "> keys: " +
+        (mKeys.join(",") || "(none found within 6 ancestors)"),
+    );
+
+    // Shallow structural describe: constructor, own keys, prototype methods.
+    function describe(o, depth, prefix, seen) {
+      if (o == null) return String(o);
+      var t = typeof o;
+      if (t === "function") return "fn";
+      if (t !== "object") return JSON.stringify(o);
+      if (seen.indexOf(o) >= 0) return "[circular]";
+      seen.push(o);
+      var cn = (o.constructor && o.constructor.name) || "?";
+      var keys = [];
+      try {
+        keys = Object.keys(o);
+      } catch (e) {}
+      var methods = [];
+      var proto = Object.getPrototypeOf(o);
+      if (proto && proto !== Object.prototype && proto !== Array.prototype) {
+        Object.getOwnPropertyNames(proto).forEach(function (m) {
+          if (m === "constructor") return;
+          try {
+            if (typeof o[m] === "function") methods.push(m);
+          } catch (e) {}
+        });
+      }
+      var s =
+        cn +
+        " {keys:[" +
+        keys.slice(0, 50).join(",") +
+        "]" +
+        (methods.length ? " methods:[" + methods.slice(0, 50).join(",") + "]" : "") +
+        "}";
+      if (depth > 0) {
+        keys.forEach(function (k) {
+          if (
+            !/cam|view|zoom|scale|center|pos|pan|map|scene|render|control|pixi|app|state|store|transform|offset|coord|bounds|tile/i.test(
+              k,
+            )
+          )
+            return;
+          var child;
+          try {
+            child = o[k];
+          } catch (e) {
+            return;
+          }
+          if (child && typeof child === "object") {
+            s +=
+              "\n" + prefix + "." + k + " = " + describe(child, depth - 1, prefix + "  ", seen);
+          } else if (typeof child !== "function") {
+            s += "\n" + prefix + "." + k + " = " + JSON.stringify(child);
+          }
+        });
+      }
+      return s;
+    }
+
+    // Try to get the Angular (Ivy) component instance.
+    var inst = null;
+    try {
+      if (window.ng && typeof window.ng.getComponent === "function") {
+        inst = window.ng.getComponent(host) || window.ng.getComponent(mEl);
+      }
+    } catch (e) {
+      L.push("ng.getComponent threw: " + (e && e.message));
+    }
+
+    if (!inst) {
+      // Fall back to scanning the Ivy LView array under __ngContext__.
+      var ctx = host.__ngContext__;
+      if (ctx == null) ctx = mEl.__ngContext__;
+      L.push(
+        "__ngContext__: " +
+          (ctx == null
+            ? "absent"
+            : typeof ctx +
+              (Array.isArray(ctx) ? " (LView len=" + ctx.length + ")" : " = " + ctx)),
+      );
+      if (Array.isArray(ctx)) {
+        ctx.forEach(function (v, i) {
+          if (v && typeof v === "object" && !Array.isArray(v)) {
+            var cn = v.constructor && v.constructor.name;
+            if (
+              cn &&
+              cn !== "Object" &&
+              cn.length < 50 &&
+              /Map|World|Camera|View|Component|Ctrl|Controller|Renderer|Scene|Pixi/i.test(cn)
+            ) {
+              L.push("  LView[" + i + "]: " + cn);
+              if (!inst && /Map|World/i.test(cn)) inst = v;
+            }
+          }
+        });
+      }
+    }
+
+    if (inst) {
+      L.push("");
+      L.push("component instance:");
+      L.push(describe(inst, 2, "  ", []));
+    } else {
+      L.push("component instance: NOT RESOLVED");
+    }
+
+    // Canvas + WebGL context info (helps confirm PIXI / raw WebGL).
+    var canv = host.tagName === "CANVAS" ? host : host.querySelector("canvas");
+    if (canv) {
+      L.push(
+        "canvas: " + canv.width + "x" + canv.height + " keys:[" + Object.keys(canv).slice(0, 20).join(",") + "]",
+      );
+    }
+    return L.join("\n");
   }
 
   window.__smDump = function () {
