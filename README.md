@@ -7,8 +7,8 @@ Userscript that fixes the worst mobile UX problems of the screeps.com web client
 | Problem | Fix |
 | --- | --- |
 | Can't pick an object when several share a tile | v0.2: independent bottom-sheet picker. A tap on the room grid is converted to tile coordinates directly (no dependency on the client's popup); if the tile holds 2+ objects, a bottom bar with large buttons appears — tap one to select it. The client's own `.view-popup` is also restyled/clamped as a secondary path. |
-| Whole UI too small | The site forces a 1280px layout viewport; the script sets it to 980 (`viewportWidth`) and additionally zooms the console/Memory panes and the room aside panel by 1.3× (`uiScale`; the script editor pane and game field are untouched). |
-| Stuck zoomed into the map, can't get back to the UI | The room/world-map pan code consumes touch events, blocking native pinch-out and page panning. v0.3 keeps multi-touch (and, while zoomed in, all touches) away from the map's handlers so native pinch/pan works, and shows a floating ⛶ button (bottom-center of the visible area, only while zoomed in) that resets the zoom in one tap. |
+| Whole UI too small | The site forces a 1280px layout viewport; the script sets it to 850 (`viewportWidth`), rendering the whole UI ~1.5× larger. `uiScale` (extra zoom for the console/Memory/aside panes) defaults to `1` now, so every pane scales uniformly from the viewport width. |
+| Accidentally pinch-zooming the whole UI | v0.4 locks the browser's page zoom (`lockZoom` → `user-scalable=no`), so the UI can never be pinch-zoomed and can't get "stuck" zoomed in. The **map is still zoomable**, via the client's own +/- zoom controls (enlarged for touch). The earlier floating ⛶ zoom-reset button is gone — with page zoom locked there is nothing to reset. |
 | Can't resize the Script/Console/Memory panel by touch | The client's resize handle only listens to mouse events. The script bridges touch drags to synthetic mouse events, so dragging the top strip of the panel resizes it (height persists via the client's own localStorage key). Double-tap the handle to cycle 35% / 60% / 85% height presets. |
 | Top-left buttons (burger/logo vs World/overview) overlap | On narrow screens the navbar's right-side resource/CPU indicators wrap it to a second row, which collides with the room view's left controls. The script hides those indicators on touch devices so the navbar stays a single 42px row. |
 
@@ -21,6 +21,24 @@ Userscript that fixes the worst mobile UX problems of the screeps.com web client
    install prompt.)
 3. Reload screeps.com.
 
+### Auto-update
+
+The script carries `@updateURL`/`@downloadURL` pointing at the raw file on
+`main`, so Violentmonkey/Tampermonkey check for new versions automatically and
+pull them once the `@version` is bumped and pushed.
+
+To enable it the **first** time, the installed copy must already contain those
+headers — install once from the raw URL so the manager records them:
+
+```
+https://raw.githubusercontent.com/sy-harabi/screeps-mobile-tools/main/screeps-mobile.user.js
+```
+
+Opening that URL triggers the install prompt. After that, every future push
+that bumps `@version` is picked up automatically (managers check periodically;
+"Check for updates" in the dashboard forces it immediately). GitHub's raw CDN
+caches for a few minutes, so a just-pushed update may take a short while.
+
 ## Config
 
 Edit the `CONFIG` block at the top of the script:
@@ -28,11 +46,16 @@ Edit the `CONFIG` block at the top of the script:
 - `touchOnly` — CSS applies only on touch devices (`pointer: coarse`). Set
   `false` to test on desktop.
 - `heightPresets` — panel height fractions cycled by double-tapping the handle.
-- `viewportWidth` — layout viewport width (site default 1280). Default `980`
-  (~30% larger UI). Lower values enlarge further but the layout is unverified
-  below ~980. `null` restores the site default.
+- `viewportWidth` — layout viewport width (site default 1280). Default `850`
+  (~1.5× larger UI, 1280/850). Lower values enlarge further; the layout is
+  unverified below ~980, so raise it back toward 980 if anything breaks.
+  `null` restores the site default.
 - `uiScale` — extra zoom for console/Memory panes and the aside panel.
-  Default `1.3`. Set `1` to disable.
+  Default `1` (off). Only raise this if you want those panes larger than the
+  rest of the UI; with `viewportWidth` already at 850 the whole UI is ~1.5×.
+- `lockZoom` — when `true` (default), the browser's page zoom is disabled
+  (`user-scalable=no`) so the UI cannot be pinch-zoomed. The map still zooms
+  via the client's own +/- controls. Requires `viewportWidth` to be set.
 
 ## Diagnostics
 

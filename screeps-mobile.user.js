@@ -1,11 +1,15 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.3.1
+// @version      0.4.0
 // @description  Mobile UX fixes for screeps.com: touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @match        https://screeps.com/*
 // @run-at       document-idle
 // @grant        none
+// @homepageURL  https://github.com/sy-harabi/screeps-mobile-tools
+// @supportURL   https://github.com/sy-harabi/screeps-mobile-tools/issues
+// @downloadURL  https://raw.githubusercontent.com/sy-harabi/screeps-mobile-tools/main/screeps-mobile.user.js
+// @updateURL    https://raw.githubusercontent.com/sy-harabi/screeps-mobile-tools/main/screeps-mobile.user.js
 // ==/UserScript==
 
 /*
@@ -37,12 +41,19 @@
     heightPresets: [0.35, 0.6, 0.85],
     doubleTapMs: 400,
     // The site ships <meta name="viewport" content="width=1280">, which is
-    // why everything is tiny on phones. 980 renders the whole UI ~30%
-    // larger; null = leave the site default untouched.
-    viewportWidth: 980,
+    // why everything is tiny on phones. 850 renders the whole UI ~1.5x
+    // larger (1280/850); null = leave the site default untouched.
+    // Raise back toward 980 if the layout breaks at 850.
+    viewportWidth: 850,
     // Extra zoom for the console/Memory panes and the room aside panel
     // (game field and script editor are left untouched). 1 = off.
-    uiScale: 1.3,
+    // With viewportWidth already ~1.5x, keep this at 1 so every pane
+    // scales uniformly (otherwise those panes would double-scale).
+    uiScale: 1,
+    // Lock the browser's page zoom (user-scalable=no) so the UI can never
+    // be pinch-zoomed. The map is still zoomable via the client's own
+    // +/- zoom controls. Requires viewportWidth to be set.
+    lockZoom: true,
   };
 
   /* ------------------------------------------------------------------ */
@@ -82,14 +93,10 @@
         CONFIG.uiScale +
         "; }\n"
       : "") +
-    /* Let the browser handle pinch gestures over the room / world map.
-     * (The pixi canvas sets touch-action:none inline; stylesheet
-     * !important overrides non-important inline styles.) */
-    "section.room .game-field-container," +
-    " section.room .game-field-container *," +
-    " section.world-map .map-container," +
-    " section.world-map .map-container * {" +
-    " touch-action: auto !important; }\n" +
+    /* Note: we deliberately do NOT override touch-action over the map.
+     * The client's native inline touch-action:none is left intact so the
+     * client handles map pan/gestures itself; map zoom is via its own
+     * +/- controls. Browser page zoom is locked off (see lockZoom). */
     "}";
 
   var style = document.createElement("style");
@@ -99,7 +106,16 @@
 
   if (CONFIG.viewportWidth) {
     var meta = document.querySelector('meta[name="viewport"]');
-    if (meta) meta.setAttribute("content", "width=" + CONFIG.viewportWidth);
+    if (meta) {
+      var content = "width=" + CONFIG.viewportWidth;
+      // Lock page zoom: maximum-scale=1 is required alongside
+      // user-scalable=no for some Android browsers to honor the lock.
+      if (CONFIG.lockZoom) {
+        content +=
+          ",initial-scale=1,minimum-scale=1,maximum-scale=1,user-scalable=no";
+      }
+      meta.setAttribute("content", content);
+    }
   }
 
   /* ------------------------------------------------------------------ */
@@ -436,107 +452,25 @@
   }
 
   /* ------------------------------------------------------------------ */
-  /* 5. Pinch-zoom escape                                                */
+  /* 5. Viewport helpers                                                 */
   /*                                                                     */
-  /* The room / world map pan code consumes touch events (jQuery         */
-  /* "touchmove" bindings returning false), so once you pinch-zoom into  */
-  /* the map you can neither pinch back out nor pan the page to reach    */
-  /* the UI. Two measures:                                               */
-  /*  a) capture-phase stopPropagation keeps multi-touch (always) and    */
-  /*     all touches (while zoomed in) away from the map's handlers, so  */
-  /*     the browser's native pinch/pan works over the map;              */
-  /*  b) a floating button, pinned to the VISUAL viewport (always on     */
-  /*     screen), resets the zoom via a viewport-meta rewrite.           */
+  /* Browser page zoom is locked off (CONFIG.lockZoom -> viewport meta   */
+  /* user-scalable=no), so the UI can never be pinch-zoomed and the map  */
+  /* is zoomed only via the client's own +/- controls. The pinch-escape  */
+  /* button that earlier versions needed is therefore gone. We keep only */
+  /* zoomFactor (for diagnostics) and pinToVisualBottom (to keep the     */
+  /* tile-picker sheet on screen if the visual viewport ever shifts,     */
+  /* e.g. an on-screen keyboard).                                        */
   /* ------------------------------------------------------------------ */
 
-  var MAP_SEL =
-    "section.room .game-field-container, section.world-map .map-container";
-
-  // 1 = fully zoomed out (page fits the screen), >1 = pinch-zoomed in.
+  // 1 = fully zoomed out (page fits the screen), >1 = zoomed in.
+  // With zoom locked this reports ~1.0; retained for the dump.
   function zoomFactor() {
     var vv = window.visualViewport;
     return vv ? window.innerWidth / vv.width : 1;
   }
 
-  ["touchstart", "touchmove", "touchend", "touchcancel"].forEach(
-    function (type) {
-      document.addEventListener(
-        type,
-        function (e) {
-          if (!(e.target.closest && e.target.closest(MAP_SEL))) return;
-          var multi = e.touches && e.touches.length >= 2;
-          if (multi || zoomFactor() > 1.2) e.stopPropagation();
-        },
-        { capture: true, passive: true },
-      );
-    },
-  );
-
-  function baseViewport() {
-    return "width=" + (CONFIG.viewportWidth || 1280);
-  }
-
-  function resetZoom() {
-    var meta = document.querySelector('meta[name="viewport"]');
-    var vv = window.visualViewport;
-    if (meta && vv) {
-      // Force the fit scale via min/max-scale, then release the clamp.
-      var fit = ((vv.width * vv.scale) / window.innerWidth).toFixed(4);
-      meta.setAttribute(
-        "content",
-        baseViewport() +
-          ",initial-scale=" +
-          fit +
-          ",minimum-scale=" +
-          fit +
-          ",maximum-scale=" +
-          fit,
-      );
-      setTimeout(function () {
-        meta.setAttribute("content", baseViewport());
-        updateEscBtn();
-      }, 350);
-    }
-    // Fallback: at least bring the top-left UI (navbar) into view.
-    try {
-      window.scrollTo(0, 0);
-    } catch (err) {}
-  }
-
-  var escBtn = document.createElement("button");
-  escBtn.id = "sm-zoom-escape";
-  escBtn.textContent = "⛶"; // ⛶
-  escBtn.style.cssText =
-    "position:fixed;z-index:99998;display:none;align-items:center;" +
-    "justify-content:center;color:#fff;background:rgba(40,40,40,0.85);" +
-    "border:1px solid #888;border-radius:50%;padding:0;";
-  escBtn.addEventListener("click", resetZoom);
-  document.body.appendChild(escBtn);
-
-  function updateEscBtn() {
-    var vv = window.visualViewport;
-    if (!vv) return;
-    var zf = zoomFactor();
-    if (zf <= 1.2) {
-      escBtn.style.display = "none";
-      return;
-    }
-    // Sized/positioned in layout px, compensated by the current zoom so
-    // the button keeps a constant physical size at the bottom-center of
-    // the VISIBLE area.
-    var size = Math.round(52 / vv.scale);
-    escBtn.style.display = "flex";
-    escBtn.style.width = size + "px";
-    escBtn.style.height = size + "px";
-    escBtn.style.fontSize = Math.round(28 / vv.scale) + "px";
-    escBtn.style.left =
-      Math.round(vv.offsetLeft + vv.width / 2 - size / 2) + "px";
-    escBtn.style.top =
-      Math.round(vv.offsetTop + vv.height - size - 12 / vv.scale) + "px";
-  }
-
-  // Keep visual-viewport-pinned elements (escape button, picker sheet)
-  // in place while the user pinches or pans.
+  // Keep a fixed, bottom-pinned element aligned to the VISUAL viewport.
   function pinToVisualBottom(el) {
     var vv = window.visualViewport;
     if (!vv) return; // default fixed bottom:0 styles are fine then
@@ -549,13 +483,11 @@
 
   if (window.visualViewport) {
     var onVvChange = function () {
-      updateEscBtn();
       var sheet = document.getElementById("sm-tile-picker");
       if (sheet) pinToVisualBottom(sheet);
     };
     window.visualViewport.addEventListener("scroll", onVvChange);
     window.visualViewport.addEventListener("resize", onVvChange);
-    updateEscBtn();
   }
 
   /* ------------------------------------------------------------------ */
@@ -564,7 +496,7 @@
 
   function dump() {
     var lines = [];
-    lines.push("screeps-mobile-ux 0.3.0");
+    lines.push("screeps-mobile-ux 0.4.0");
     lines.push("zoomFactor: " + zoomFactor().toFixed(2));
     lines.push("ua: " + navigator.userAgent);
     lines.push(
