@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.6.1
+// @version      0.6.2
 // @description  Mobile UX fixes for screeps.com: touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @match        https://screeps.com/*
 // @run-at       document-idle
@@ -87,6 +87,12 @@
     // Movement (px) beyond which a world-map touch counts as a drag, not
     // a tap.
     worldMapPanThreshold: 5,
+    // The "alpha" world map (#!/map2) is a modern app2 canvas component
+    // that pans/pinches via pointer events. Setting touch-action:none on
+    // its canvas lets those pointer gestures work by finger. If map2 turns
+    // out to be mouse-only (native gestures still dead after this), a
+    // touch->pointer/mouse bridge is the fallback.
+    map2TouchAction: true,
   };
 
   /* ------------------------------------------------------------------ */
@@ -126,10 +132,20 @@
         CONFIG.uiScale +
         "; }\n"
       : "") +
-    /* Note: we deliberately do NOT override touch-action over the map.
-     * The client's native inline touch-action:none is left intact so the
-     * client handles map pan/gestures itself; map zoom is via its own
-     * +/- controls. Browser page zoom is locked off (see lockZoom). */
+    /* map2 (#!/map2, the "alpha" world map): a modern app2 canvas
+     * component (app-world-map-map > canvas). It handles pan/pinch via
+     * pointer events, but only receives an uninterrupted pointer stream
+     * if the browser is told not to claim the touch gesture first --
+     * hence touch-action:none on the canvas/host. */
+    (CONFIG.map2TouchAction
+      ? "app-world-map-map, app-world-map-map canvas," +
+        " app-world-map-base, app-world-map-base canvas {" +
+        " touch-action: none !important; }\n"
+      : "") +
+    /* Note: for the OLD room/world map we deliberately do NOT override
+     * touch-action. The client's native inline touch-action:none is left
+     * intact; room zoom is via its +/- controls and (v0.5+) the pinch
+     * bridge. Browser page zoom is locked off (see lockZoom). */
     "}";
 
   var style = document.createElement("style");
@@ -810,7 +826,7 @@
 
   function dump() {
     var lines = [];
-    lines.push("screeps-mobile-ux 0.6.1");
+    lines.push("screeps-mobile-ux 0.6.2");
     lines.push("zoomFactor: " + zoomFactor().toFixed(2));
     lines.push("ua: " + navigator.userAgent);
     lines.push(
