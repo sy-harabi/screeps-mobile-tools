@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.7.5
+// @version      0.7.6
 // @description  Mobile UX fixes for screeps.com: touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @author       sy-harabi
 // @license      MIT
@@ -33,6 +33,10 @@
 
 (function () {
   "use strict";
+
+  // Keep in sync with the @version header above; the dump prints this so the
+  // on-screen header never lies about which build is loaded.
+  var SM_VERSION = "0.7.6";
 
   var CONFIG = {
     // Apply the CSS only on coarse-pointer (touch) devices.
@@ -949,7 +953,7 @@
 
   function dump() {
     var lines = [];
-    lines.push("screeps-mobile-ux 0.7.5");
+    lines.push("screeps-mobile-ux " + SM_VERSION);
     lines.push(
       "uiSize: width=" +
         smCurrentWidth() +
@@ -1305,6 +1309,80 @@
     });
     if (!comps.length) {
       L.push("component instance: NOT RESOLVED (ng.probe returned nothing)");
+    }
+
+    // ---- control surface (v4): exact live VALUES + method sources -------
+    // Read-only: getValue() on the center/scale/bound subjects and the source
+    // text of the setter/getter methods, so pan/zoom math can be written
+    // against the real signatures instead of guessed ones. No mutation here.
+    function srcOf(obj, name) {
+      try {
+        var f = obj && obj[name];
+        return typeof f === "function"
+          ? f.toString().replace(/\s+/g, " ").slice(0, 240)
+          : "(not a fn)";
+      } catch (e) {
+        return "err:" + (e && e.message);
+      }
+    }
+    function callVal(fn) {
+      try {
+        return JSON.stringify(fn());
+      } catch (e) {
+        return "err:" + (e && e.message);
+      }
+    }
+    var baseD = probeOf(document.querySelector("app-world-map-base"));
+    var base = baseD && baseD.componentInstance;
+    if (base) {
+      L.push("");
+      L.push("=== control surface ===");
+      L.push("base.scale=" + JSON.stringify(base.scale) + " min/max/delta=" + base.MIN_SCALE + "/" + base.MAX_SCALE + "/" + base.SCALE_DELTA);
+      if (base._centerSbj)
+        L.push("base._centerSbj.getValue()=" + callVal(function () { return base._centerSbj.getValue(); }));
+      if (base._scaleSbj)
+        L.push("base._scaleSbj.getValue()=" + callVal(function () { return base._scaleSbj.getValue(); }));
+      if (base._boundSbj)
+        L.push("base._boundSbj.getValue()=" + callVal(function () { return base._boundSbj.getValue(); }));
+      L.push("base.onChangeCenter=" + srcOf(base, "onChangeCenter"));
+      L.push("base.onChangeScale=" + srcOf(base, "onChangeScale"));
+      L.push("base.onChangeScalePercent=" + srcOf(base, "onChangeScalePercent"));
+      L.push("base.onBound=" + srcOf(base, "onBound"));
+
+      var mref = base.mapRef;
+      if (mref) {
+        L.push("mapRef.setCenter=" + srcOf(mref, "setCenter"));
+        L.push("mapRef.setScale=" + srcOf(mref, "setScale"));
+        L.push("mapRef.onCenter=" + srcOf(mref, "onCenter"));
+        L.push("mapRef.onScale=" + srcOf(mref, "onScale"));
+      }
+      var mc =
+        mref && mref.screepsMap && mref.screepsMap._mapContainer;
+      if (mc) {
+        L.push("--- MapContainer ---");
+        L.push("mc._width/_height=" + mc._width + "/" + mc._height);
+        L.push("mc.getCenter()=" + callVal(function () { return mc.getCenter(); }));
+        L.push("mc.getBound()=" + callVal(function () { return mc.getBound(); }));
+        L.push("mc.move=" + srcOf(mc, "move"));
+        L.push("mc.setCenter=" + srcOf(mc, "setCenter"));
+        L.push("mc.getCenter=" + srcOf(mc, "getCenter"));
+        L.push("mc.getBound=" + srcOf(mc, "getBound"));
+        L.push("mc.scale=" + srcOf(mc, "scale"));
+        L.push("mc.setScale=" + srcOf(mc, "setScale"));
+        try {
+          var tf = mc._map && mc._map.transform;
+          if (tf) {
+            L.push("mc._map.transform.position={x:" + (tf.position && tf.position.x) + ",y:" + (tf.position && tf.position.y) + "}");
+            L.push("mc._map.transform.scale={x:" + (tf.scale && tf.scale.x) + ",y:" + (tf.scale && tf.scale.y) + "}");
+          }
+        } catch (e) {
+          L.push("mc._map.transform err:" + (e && e.message));
+        }
+      } else {
+        L.push("MapContainer: unreachable via base.mapRef.screepsMap._mapContainer");
+      }
+    } else {
+      L.push("control surface: base component not resolved");
     }
 
     // PIXI probe: hunt for the Application/stage/viewport/camera holding the
