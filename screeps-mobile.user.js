@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.4.0
+// @version      0.4.1
 // @description  Mobile UX fixes for screeps.com: touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @match        https://screeps.com/*
 // @run-at       document-idle
@@ -108,11 +108,15 @@
     var meta = document.querySelector('meta[name="viewport"]');
     if (meta) {
       var content = "width=" + CONFIG.viewportWidth;
-      // Lock page zoom: maximum-scale=1 is required alongside
-      // user-scalable=no for some Android browsers to honor the lock.
+      // Lock page zoom with user-scalable=no ONLY. Do NOT set
+      // initial-scale/minimum-scale/maximum-scale: pinning the scale to 1
+      // fights the width-based magnification and renders the UI at native
+      // (tiny) size on some Android browsers, and the clamp then traps it
+      // small (user can't pinch to recover). width=<n> alone provides the
+      // enlargement. (Firefox Android may still allow accessibility zoom
+      // regardless of user-scalable=no; that is a browser policy, not a bug.)
       if (CONFIG.lockZoom) {
-        content +=
-          ",initial-scale=1,minimum-scale=1,maximum-scale=1,user-scalable=no";
+        content += ",user-scalable=no";
       }
       meta.setAttribute("content", content);
     }
@@ -496,7 +500,7 @@
 
   function dump() {
     var lines = [];
-    lines.push("screeps-mobile-ux 0.4.0");
+    lines.push("screeps-mobile-ux 0.4.1");
     lines.push("zoomFactor: " + zoomFactor().toFixed(2));
     lines.push("ua: " + navigator.userAgent);
     lines.push(
