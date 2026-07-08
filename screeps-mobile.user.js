@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.7.1
+// @version      0.7.2
 // @description  Mobile UX fixes for screeps.com: touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @author       sy-harabi
 // @license      MIT
@@ -98,6 +98,11 @@
     // UI size live. The chosen size persists in localStorage (survives
     // reloads and auto-updates), independent of viewportWidth above.
     sizeControl: true,
+    // Distance (px) of the A± control from the bottom-right corner. Nudge
+    // sizeControlRight up if it collides with a client button (e.g. the
+    // history view's right-panel toggle sits in the bottom-right corner).
+    sizeControlRight: 52,
+    sizeControlBottom: 8,
   };
 
   /* ------------------------------------------------------------------ */
@@ -879,8 +884,11 @@
     var wrap = document.createElement("div");
     wrap.id = "sm-size-control";
     wrap.style.cssText =
-      "position:fixed;right:6px;bottom:8px;z-index:99990;" +
-      "display:flex;align-items:center;gap:6px;";
+      "position:fixed;right:" +
+      CONFIG.sizeControlRight +
+      "px;bottom:" +
+      CONFIG.sizeControlBottom +
+      "px;z-index:99990;display:flex;align-items:center;gap:6px;";
 
     var panel = document.createElement("div");
     panel.style.cssText =
@@ -941,7 +949,7 @@
 
   function dump() {
     var lines = [];
-    lines.push("screeps-mobile-ux 0.7.1");
+    lines.push("screeps-mobile-ux 0.7.2");
     lines.push(
       "uiSize: width=" +
         smCurrentWidth() +
