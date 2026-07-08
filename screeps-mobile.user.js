@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.6.2
+// @version      0.6.3
 // @description  Mobile UX fixes for screeps.com: touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @match        https://screeps.com/*
 // @run-at       document-idle
@@ -87,11 +87,14 @@
     // Movement (px) beyond which a world-map touch counts as a drag, not
     // a tap.
     worldMapPanThreshold: 5,
-    // The "alpha" world map (#!/map2) is a modern app2 canvas component
-    // that pans/pinches via pointer events. Setting touch-action:none on
-    // its canvas lets those pointer gestures work by finger. If map2 turns
-    // out to be mouse-only (native gestures still dead after this), a
-    // touch->pointer/mouse bridge is the fallback.
+    // The "alpha" world map (#!/map2) is a modern app2 canvas component,
+    // but (confirmed in 0.6.2) it does NOT pan/zoom via touch/pointer --
+    // only mouse drag + wheel, like the old world map. So map2 is handled
+    // by the same touch->mouse pan bridge (worldMapPan) and pinch->wheel
+    // zoom bridge (pinchZoomMap); their selectors include app-world-map-map.
+    // touch-action:none here just hands those bridges the touch stream
+    // (side effect: pull-to-refresh over the map is disabled -- panning and
+    // pull-to-refresh cannot coexist on the same downward drag).
     map2TouchAction: true,
   };
 
@@ -133,10 +136,9 @@
         "; }\n"
       : "") +
     /* map2 (#!/map2, the "alpha" world map): a modern app2 canvas
-     * component (app-world-map-map > canvas). It handles pan/pinch via
-     * pointer events, but only receives an uninterrupted pointer stream
-     * if the browser is told not to claim the touch gesture first --
-     * hence touch-action:none on the canvas/host. */
+     * component (app-world-map-map > canvas) whose pan/zoom is mouse+wheel
+     * only. touch-action:none stops the browser from claiming the touch
+     * gesture so the pan/pinch bridges (5b/5c) get the raw touch stream. */
     (CONFIG.map2TouchAction
       ? "app-world-map-map, app-world-map-map canvas," +
         " app-world-map-base, app-world-map-base canvas {" +
@@ -666,7 +668,8 @@
   /* ------------------------------------------------------------------ */
 
   var MAP_ZOOM_SEL =
-    "section.room .game-field-container, section.world-map .map-container";
+    "section.room .game-field-container, section.world-map .map-container," +
+    " app-world-map-map"; // last: the alpha map2 canvas host
   var pinch = null; // { d, accum } while a two-finger pinch is active
   pickerInfo.lastPinch = "-"; // diagnostics
 
@@ -759,7 +762,8 @@
   /* Two-finger gestures are left to the pinch-zoom bridge (5b).         */
   /* ------------------------------------------------------------------ */
 
-  var WORLD_MAP_SEL = "section.world-map .map-container";
+  var WORLD_MAP_SEL =
+    "section.world-map .map-container, app-world-map-map"; // + alpha map2
   var wmPan = null;
 
   document.addEventListener(
@@ -826,7 +830,7 @@
 
   function dump() {
     var lines = [];
-    lines.push("screeps-mobile-ux 0.6.2");
+    lines.push("screeps-mobile-ux 0.6.3");
     lines.push("zoomFactor: " + zoomFactor().toFixed(2));
     lines.push("ua: " + navigator.userAgent);
     lines.push(
