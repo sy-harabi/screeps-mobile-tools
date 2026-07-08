@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.6.4
+// @version      0.6.5
 // @description  Mobile UX fixes for screeps.com: touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @match        https://screeps.com/*
 // @run-at       document-idle
@@ -87,15 +87,11 @@
     // Movement (px) beyond which a world-map touch counts as a drag, not
     // a tap.
     worldMapPanThreshold: 5,
-    // The "alpha" world map (#!/map2) is a modern app2 canvas component,
-    // but (confirmed in 0.6.2) it does NOT pan/zoom via touch/pointer --
-    // only mouse drag + wheel, like the old world map. So map2 is handled
-    // by the same touch->mouse pan bridge (worldMapPan) and pinch->wheel
-    // zoom bridge (pinchZoomMap); their selectors include app-world-map-map.
-    // touch-action:none here just hands those bridges the touch stream
-    // (side effect: pull-to-refresh over the map is disabled -- panning and
-    // pull-to-refresh cannot coexist on the same downward drag).
-    map2TouchAction: true,
+    // The "alpha" world map (#!/map2) drag-pan could NOT be driven by any
+    // synthetic event (touch/mouse/pointer, 0.6.2-0.6.4); injected events
+    // were misread as a room click. map2 is therefore left untouched, so
+    // this is off (true would only disable pull-to-refresh with no benefit).
+    map2TouchAction: false,
   };
 
   /* ------------------------------------------------------------------ */
@@ -135,10 +131,10 @@
         CONFIG.uiScale +
         "; }\n"
       : "") +
-    /* map2 (#!/map2, the "alpha" world map): a modern app2 canvas
-     * component (app-world-map-map > canvas) whose pan/zoom is mouse+wheel
-     * only. touch-action:none stops the browser from claiming the touch
-     * gesture so the pan/pinch bridges (5b/5c) get the raw touch stream. */
+    /* map2 (#!/map2, the "alpha" world map) is left untouched -- its
+     * drag-pan can't be driven by synthetic events (see WORLD_MAP_SEL), so
+     * this touch-action:none rule stays off (map2TouchAction=false) to keep
+     * pull-to-refresh working there. */
     (CONFIG.map2TouchAction
       ? "app-world-map-map, app-world-map-map canvas," +
         " app-world-map-base, app-world-map-base canvas {" +
@@ -194,26 +190,6 @@
     );
   }
 
-  // Synthetic PointerEvent with pointerType "mouse" so components that
-  // handle pointer input (and may ignore pointerType "touch") still react.
-  // buttons: 1 while a drag button is held, 0 on release.
-  function firePointer(type, target, touch, buttons) {
-    if (typeof PointerEvent === "undefined") return;
-    target.dispatchEvent(
-      new PointerEvent(type, {
-        bubbles: true,
-        cancelable: true,
-        view: window,
-        pointerId: 1,
-        pointerType: "mouse",
-        isPrimary: true,
-        button: type === "pointermove" ? -1 : 0,
-        buttons: buttons,
-        clientX: touch ? touch.clientX : 0,
-        clientY: touch ? touch.clientY : 0,
-      }),
-    );
-  }
 
   document.addEventListener(
     "touchstart",
@@ -689,8 +665,8 @@
   /* ------------------------------------------------------------------ */
 
   var MAP_ZOOM_SEL =
-    "section.room .game-field-container, section.world-map .map-container," +
-    " app-world-map-map"; // last: the alpha map2 canvas host
+    "section.room .game-field-container, section.world-map .map-container";
+  // (map2 / app-world-map-map is intentionally excluded -- see WORLD_MAP_SEL.)
   var pinch = null; // { d, accum } while a two-finger pinch is active
   pickerInfo.lastPinch = "-"; // diagnostics
 
@@ -783,8 +759,13 @@
   /* Two-finger gestures are left to the pinch-zoom bridge (5b).         */
   /* ------------------------------------------------------------------ */
 
-  var WORLD_MAP_SEL =
-    "section.world-map .map-container, app-world-map-map"; // + alpha map2
+  // Old world map only. map2 (#!/map2) is intentionally NOT bridged: it is
+  // an app2 WebGL component whose drag-pan relies on real pointer-capture
+  // semantics that synthetic mouse/pointer events do not satisfy -- injected
+  // events were misread as a room click (accidental navigation) instead of a
+  // pan (verified across 0.6.2-0.6.4). Use #!/map on mobile for a pannable
+  // map, or see the deeper Angular-component route noted in the README.
+  var WORLD_MAP_SEL = "section.world-map .map-container";
   var wmPan = null;
 
   document.addEventListener(
@@ -794,9 +775,7 @@
       if (e.touches.length !== 1) {
         // A second finger (pinch) ends any active pan cleanly.
         if (wmPan) {
-          var et = e.touches[0] || wmPan.last;
-          firePointer("pointerup", wmPan.target, et, 0);
-          fireMouse("mouseup", wmPan.target, et);
+          fireMouse("mouseup", wmPan.target, e.touches[0] || wmPan.last);
           wmPan = null;
         }
         return;
@@ -804,11 +783,7 @@
       if (!(e.target.closest && e.target.closest(WORLD_MAP_SEL))) return;
       var t = e.touches[0];
       wmPan = { target: e.target, x: t.clientX, y: t.clientY, moved: false, last: t };
-      e.preventDefault(); // own the gesture; we synthesize the mouse/pointer events
-      // Dispatch pointer + mouse: the old world map uses mouse events; the
-      // alpha map2 uses pointer events (and ignores pointerType "touch"),
-      // so a pointerType:"mouse" event is what drives it.
-      firePointer("pointerdown", e.target, t, 1);
+      e.preventDefault(); // own the gesture; we synthesize the mouse events
       fireMouse("mousedown", e.target, t);
     },
     { capture: true, passive: false },
@@ -827,9 +802,6 @@
         wmPan.moved = true;
       }
       e.preventDefault(); // no page scroll while panning
-      // Drag handlers usually live on document; dispatch on the map target
-      // so the event bubbles to both the map element and document.
-      firePointer("pointermove", wmPan.target, t, 1);
       fireMouse("mousemove", wmPan.target, t);
     },
     { capture: true, passive: false },
@@ -838,10 +810,8 @@
   function endWmPan(e) {
     if (!wmPan) return;
     var t = e.changedTouches && e.changedTouches[0];
-    var pt = t || wmPan.last;
-    firePointer("pointerup", wmPan.target, pt, 0);
-    fireMouse("mouseup", wmPan.target, pt);
-    if (!wmPan.moved) fireMouse("click", wmPan.target, pt);
+    fireMouse("mouseup", wmPan.target, t || wmPan.last);
+    if (!wmPan.moved) fireMouse("click", wmPan.target, t || wmPan.last);
     pickerInfo.lastWmPan = wmPan.moved ? "drag" : "tap";
     wmPan = null;
   }
@@ -860,7 +830,7 @@
 
   function dump() {
     var lines = [];
-    lines.push("screeps-mobile-ux 0.6.4");
+    lines.push("screeps-mobile-ux 0.6.5");
     lines.push("zoomFactor: " + zoomFactor().toFixed(2));
     lines.push("ua: " + navigator.userAgent);
     lines.push(
