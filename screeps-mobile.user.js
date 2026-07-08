@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.6.6
+// @version      0.7.0
 // @description  Mobile UX fixes for screeps.com: touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @author       sy-harabi
 // @license      MIT
@@ -94,6 +94,10 @@
     // were misread as a room click. map2 is therefore left untouched, so
     // this is off (true would only disable pull-to-refresh with no benefit).
     map2TouchAction: false,
+    // Show a small floating A-/A+ control (bottom-right) to change the whole
+    // UI size live. The chosen size persists in localStorage (survives
+    // reloads and auto-updates), independent of viewportWidth above.
+    sizeControl: true,
   };
 
   /* ------------------------------------------------------------------ */
@@ -153,23 +157,43 @@
   style.textContent = css;
   document.head.appendChild(style);
 
-  if (CONFIG.viewportWidth) {
+  /* Layout-viewport width controls the whole-UI size (1280/width = scale).
+   * A runtime override lives in localStorage so the floating A-/A+ control
+   * (below) persists across reloads AND across script auto-updates (which
+   * overwrite this file, wiping any CONFIG edit). Helpers are declarations
+   * so they hoist for this early call.
+   *
+   * Lock page zoom with user-scalable=no ONLY. Do NOT set initial-/minimum-/
+   * maximum-scale: pinning the scale to 1 fights the width-based
+   * magnification and renders the UI tiny on some Android browsers. */
+  var SIZE_LS_KEY = "sm.viewportWidth";
+
+  function smClampWidth(w) {
+    return Math.max(427, Math.min(1280, Math.round(w))); // scale 3.0x .. 1.0x
+  }
+  function smSavedWidth() {
+    try {
+      var v = parseInt(localStorage.getItem(SIZE_LS_KEY), 10);
+      if (v >= 427 && v <= 1280) return v;
+    } catch (e) {}
+    return null;
+  }
+  function smCurrentWidth() {
+    return smSavedWidth() || CONFIG.viewportWidth || 1280;
+  }
+  function smApplyViewport(width, persist) {
     var meta = document.querySelector('meta[name="viewport"]');
-    if (meta) {
-      var content = "width=" + CONFIG.viewportWidth;
-      // Lock page zoom with user-scalable=no ONLY. Do NOT set
-      // initial-scale/minimum-scale/maximum-scale: pinning the scale to 1
-      // fights the width-based magnification and renders the UI at native
-      // (tiny) size on some Android browsers, and the clamp then traps it
-      // small (user can't pinch to recover). width=<n> alone provides the
-      // enlargement. (Firefox Android may still allow accessibility zoom
-      // regardless of user-scalable=no; that is a browser policy, not a bug.)
-      if (CONFIG.lockZoom) {
-        content += ",user-scalable=no";
-      }
-      meta.setAttribute("content", content);
+    if (!meta) return;
+    var content = "width=" + width + (CONFIG.lockZoom ? ",user-scalable=no" : "");
+    meta.setAttribute("content", content);
+    if (persist) {
+      try {
+        localStorage.setItem(SIZE_LS_KEY, String(width));
+      } catch (e) {}
     }
   }
+
+  if (CONFIG.viewportWidth) smApplyViewport(smCurrentWidth(), false);
 
   /* ------------------------------------------------------------------ */
   /* 2. Touch -> mouse bridge for the editor panel resize handle         */
@@ -827,12 +851,101 @@
   });
 
   /* ------------------------------------------------------------------ */
+  /* 5d. Floating UI-size control (A- / A+)                              */
+  /*                                                                     */
+  /* A small bottom-right button opens an A- / scale / A+ / reset row.   */
+  /* Each step rewrites the viewport meta (whole UI resizes live) and    */
+  /* persists the width to localStorage, so the size survives reloads    */
+  /* and auto-updates. Scale shown as 1280/width, clamped 1.0x .. 3.0x.  */
+  /* ------------------------------------------------------------------ */
+
+  function buildSizeControl() {
+    if (!CONFIG.sizeControl) return;
+    if (!document.body || document.getElementById("sm-size-control")) return;
+
+    function mkBtn(txt) {
+      var b = document.createElement("button");
+      b.textContent = txt;
+      b.style.cssText =
+        "min-width:34px;height:34px;font:18px/1 sans-serif;color:#eee;" +
+        "background:#3a3a3a;border:1px solid #666;border-radius:6px;padding:0;";
+      return b;
+    }
+
+    var wrap = document.createElement("div");
+    wrap.id = "sm-size-control";
+    wrap.style.cssText =
+      "position:fixed;right:6px;bottom:8px;z-index:99990;" +
+      "display:flex;align-items:center;gap:6px;";
+
+    var panel = document.createElement("div");
+    panel.style.cssText =
+      "display:none;align-items:center;gap:6px;padding:4px 6px;" +
+      "background:rgba(22,22,22,0.95);border:1px solid #666;border-radius:8px;";
+
+    var minus = mkBtn("A−");
+    var label = document.createElement("span");
+    label.style.cssText =
+      "min-width:46px;text-align:center;color:#ddd;font:15px/1 sans-serif;";
+    var plus = mkBtn("A＋");
+    var reset = mkBtn("↺");
+
+    function refresh() {
+      label.textContent = (1280 / smCurrentWidth()).toFixed(1) + "×";
+    }
+    function step(deltaScale) {
+      var s = 1280 / smCurrentWidth();
+      s = Math.max(1.0, Math.min(3.0, Math.round((s + deltaScale) * 10) / 10));
+      smApplyViewport(smClampWidth(1280 / s), true);
+      refresh();
+    }
+    minus.addEventListener("click", function () {
+      step(-0.1);
+    }); // smaller UI
+    plus.addEventListener("click", function () {
+      step(0.1);
+    }); // larger UI
+    reset.addEventListener("click", function () {
+      smApplyViewport(smClampWidth(CONFIG.viewportWidth || 1280), true);
+      refresh();
+    });
+
+    panel.appendChild(minus);
+    panel.appendChild(label);
+    panel.appendChild(plus);
+    panel.appendChild(reset);
+
+    var toggle = mkBtn("A±");
+    toggle.style.borderRadius = "50%";
+    toggle.style.opacity = "0.85";
+    toggle.addEventListener("click", function () {
+      var open = panel.style.display !== "none";
+      panel.style.display = open ? "none" : "flex";
+      if (!open) refresh();
+    });
+
+    wrap.appendChild(panel);
+    wrap.appendChild(toggle);
+    document.body.appendChild(wrap);
+  }
+
+  buildSizeControl();
+
+  /* ------------------------------------------------------------------ */
   /* 6. Diagnostics: window.__smDump() or triple-tap the navbar logo     */
   /* ------------------------------------------------------------------ */
 
   function dump() {
     var lines = [];
-    lines.push("screeps-mobile-ux 0.6.6");
+    lines.push("screeps-mobile-ux 0.7.0");
+    lines.push(
+      "uiSize: width=" +
+        smCurrentWidth() +
+        " scale=" +
+        (1280 / smCurrentWidth()).toFixed(2) +
+        "x saved=" +
+        (smSavedWidth() != null ? smSavedWidth() : "no"),
+    );
     lines.push("zoomFactor: " + zoomFactor().toFixed(2));
     lines.push("ua: " + navigator.userAgent);
     lines.push(

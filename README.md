@@ -8,6 +8,7 @@ Userscript that fixes the worst mobile UX problems of the screeps.com web client
 | --- | --- |
 | Can't pick an object when several share a tile | v0.5.1 (`popupPicker`): when 2+ objects share a tapped tile the client shows a tiny `.view-popup` list that is hard to tap (and on some devices whose items don't select at all). The script hides it and shows a large bottom bar of buttons mirrored from that list; tapping a button forwards a synthetic click to the client's own `<li>`, so selection runs through the client's handler — no tile-coordinate math, so it works at any map zoom. (The older coordinate-based picker is kept behind `coordPicker`, off by default, since it mis-reads the tile when the map is zoomed.) |
 | Whole UI too small | The site forces a 1280px layout viewport; the script sets it to 570 (`viewportWidth`), rendering the whole UI ~2.25× larger. Smaller `viewportWidth` = larger UI; raise it if the layout breaks. `uiScale` (extra zoom for the console/Memory/aside panes) defaults to `1`, so every pane scales uniformly from the viewport width. |
+| No easy way to change the UI size | v0.7 (`sizeControl`): a small **A±** button (bottom-right) opens an **A− / current scale / A＋ / ↺** row. Each tap resizes the whole UI live (1.0×–3.0×) and saves the choice to `localStorage`, so it **survives reloads and auto-updates** (editing `viewportWidth` in the file does not — auto-update overwrites the file). |
 | Accidentally pinch-zooming the whole UI | v0.4 locks the browser's page zoom (`lockZoom` → `user-scalable=no`), so the UI can never be pinch-zoomed and can't get "stuck" zoomed in. The earlier floating ⛶ zoom-reset button is gone — with page zoom locked there is nothing to reset. |
 | Pinching only zoomed the whole page, not the map | v0.5 (`pinchZoomMap`): a two-finger pinch over the room game field / world map is translated into the client's own zoom (synthetic wheel events at the pinch centroid), so **only the map zooms while the UI stays fixed**. The client's +/- zoom controls (enlarged for touch) still work too. |
 | Can't pan the world map by finger | v0.6 (`worldMapPan`): the client's world map pans on mouse drag but ignores touch, so a finger drag did nothing. The script bridges a single-finger touch to the mouse drag sequence (`mousedown`→`mousemove`→`mouseup`); a finger tap with no drag is forwarded as a click so tapping a room still navigates. Two-finger pinch still zooms. |
@@ -52,7 +53,12 @@ Edit the `CONFIG` block at the top of the script:
 - `viewportWidth` — layout viewport width (site default 1280). Default `570`
   (~2.25× larger UI, 1280/570). Smaller = larger UI; the layout is aggressive
   well below ~980, so raise it (570 → 720 → 850 → 980) if anything breaks.
-  `null` restores the site default.
+  `null` restores the site default. This is only the **starting** size — the
+  A± control (see `sizeControl`) overrides it at runtime via `localStorage`.
+- `sizeControl` — when `true` (default), show the floating **A±** button that
+  resizes the whole UI live (1.0×–3.0×) and remembers the choice across
+  reloads/auto-updates. The saved size lives in `localStorage["sm.viewportWidth"]`;
+  tap **↺** (or clear that key) to return to the `viewportWidth` default.
 - `uiScale` — extra zoom for console/Memory panes and the aside panel.
   Default `1` (off). Only raise this if you want those panes larger than the
   rest of the UI; `viewportWidth` already enlarges everything uniformly.
