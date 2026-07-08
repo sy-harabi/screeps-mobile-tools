@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.5.1
+// @version      0.6.0
 // @description  Mobile UX fixes for screeps.com: touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @match        https://screeps.com/*
 // @run-at       document-idle
@@ -79,6 +79,14 @@
     // coordinates. It breaks when the map is zoomed (wrong tile), so it is
     // off by default; popupPicker supersedes it.
     coordPicker: false,
+    // The client's world map pans on mouse drag but ignores touch, so a
+    // finger drag does nothing. Bridge single-finger touch to synthetic
+    // mouse events (mousedown/move/up) so dragging pans it; a finger tap
+    // (no drag) is forwarded as a click so room navigation still works.
+    worldMapPan: true,
+    // Movement (px) beyond which a world-map touch counts as a drag, not
+    // a tap.
+    worldMapPanThreshold: 5,
   };
 
   /* ------------------------------------------------------------------ */
@@ -725,12 +733,84 @@
   });
 
   /* ------------------------------------------------------------------ */
+  /* 5c. World-map touch pan bridge                                      */
+  /*                                                                     */
+  /* The client's world map pans on MOUSE drag (mousedown on the map ->  */
+  /* mousemove/mouseup on document) but has no touch handling, so a      */
+  /* finger drag does nothing. We bridge a single-finger touch to that   */
+  /* mouse sequence (same technique as the resize handle). A tap with no */
+  /* drag is forwarded as a click so tapping a room still navigates.     */
+  /* Two-finger gestures are left to the pinch-zoom bridge (5b).         */
+  /* ------------------------------------------------------------------ */
+
+  var WORLD_MAP_SEL = "section.world-map .map-container";
+  var wmPan = null;
+
+  document.addEventListener(
+    "touchstart",
+    function (e) {
+      if (!CONFIG.worldMapPan) return;
+      if (e.touches.length !== 1) {
+        // A second finger (pinch) ends any active pan cleanly.
+        if (wmPan) {
+          fireMouse("mouseup", wmPan.target, e.touches[0] || wmPan.last);
+          wmPan = null;
+        }
+        return;
+      }
+      if (!(e.target.closest && e.target.closest(WORLD_MAP_SEL))) return;
+      var t = e.touches[0];
+      wmPan = { target: e.target, x: t.clientX, y: t.clientY, moved: false, last: t };
+      e.preventDefault(); // own the gesture; we synthesize the mouse events
+      fireMouse("mousedown", e.target, t);
+    },
+    { capture: true, passive: false },
+  );
+
+  document.addEventListener(
+    "touchmove",
+    function (e) {
+      if (!wmPan || e.touches.length !== 1) return;
+      var t = e.touches[0];
+      wmPan.last = t;
+      if (
+        Math.abs(t.clientX - wmPan.x) > CONFIG.worldMapPanThreshold ||
+        Math.abs(t.clientY - wmPan.y) > CONFIG.worldMapPanThreshold
+      ) {
+        wmPan.moved = true;
+      }
+      e.preventDefault(); // no page scroll while panning
+      // Drag handlers usually live on document; dispatch on the map target
+      // so the event bubbles to both the map element and document.
+      fireMouse("mousemove", wmPan.target, t);
+    },
+    { capture: true, passive: false },
+  );
+
+  function endWmPan(e) {
+    if (!wmPan) return;
+    var t = e.changedTouches && e.changedTouches[0];
+    fireMouse("mouseup", wmPan.target, t || wmPan.last);
+    if (!wmPan.moved) fireMouse("click", wmPan.target, t || wmPan.last);
+    pickerInfo.lastWmPan = wmPan.moved ? "drag" : "tap";
+    wmPan = null;
+  }
+  document.addEventListener("touchend", endWmPan, {
+    capture: true,
+    passive: true,
+  });
+  document.addEventListener("touchcancel", endWmPan, {
+    capture: true,
+    passive: true,
+  });
+
+  /* ------------------------------------------------------------------ */
   /* 6. Diagnostics: window.__smDump() or triple-tap the navbar logo     */
   /* ------------------------------------------------------------------ */
 
   function dump() {
     var lines = [];
-    lines.push("screeps-mobile-ux 0.5.1");
+    lines.push("screeps-mobile-ux 0.6.0");
     lines.push("zoomFactor: " + zoomFactor().toFixed(2));
     lines.push("ua: " + navigator.userAgent);
     lines.push(
@@ -832,6 +912,12 @@
         (document.getElementById("sm-tile-picker") ? "visible" : "hidden"),
     );
     lines.push("pinch: " + pickerInfo.lastPinch);
+    lines.push(
+      "wmPan: " +
+        (pickerInfo.lastWmPan || "-") +
+        " container=" +
+        (document.querySelector(WORLD_MAP_SEL) ? "yes" : "no"),
+    );
 
     var ctrl = panelCtrl();
     lines.push(
