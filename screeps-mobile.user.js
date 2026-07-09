@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.8.3
+// @version      0.8.4
 // @description  Mobile UX fixes for screeps.com: alpha-map (map2) finger pan & pinch zoom, touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @author       sy-harabi
 // @license      MIT
@@ -36,7 +36,7 @@
 
   // Keep in sync with the @version header above; the dump prints this so the
   // on-screen header never lies about which build is loaded.
-  var SM_VERSION = "0.8.3";
+  var SM_VERSION = "0.8.4";
 
   var CONFIG = {
     // Apply the CSS only on coarse-pointer (touch) devices.
@@ -1324,26 +1324,67 @@
   window.addEventListener("hashchange", enforceMapPref);
   enforceMapPref(); // apply on initial load too
 
+  // Extract the shard token from the current hash (room / map route).
+  function currentShard() {
+    var m = (location.hash || "").match(/(shard[^/?#]+)/i);
+    return m ? m[1] : "";
+  }
+  // Build an alpha-map hash for the room currently being viewed. The room
+  // name in the hash (e.g. E7S5 / W44N22) maps to the alpha map's pos=x,y
+  // using the client's own convention: E/S positive, W/N negative, room
+  // centre +0.5 -- so goToMap()'s pos is reproduced exactly.
+  function roomToMap2Hash() {
+    var shard = currentShard();
+    var t = "#!/map2" + (shard ? "/" + shard : "");
+    var rm = (location.hash || "").match(/([WE])(\d+)([NS])(\d+)/i);
+    if (rm) {
+      var x = (rm[1].toUpperCase() === "E" ? 1 : -1) * (parseInt(rm[2], 10) + 0.5);
+      var y = (rm[3].toUpperCase() === "S" ? 1 : -1) * (parseInt(rm[4], 10) + 0.5);
+      t += "?pos=" + x + "," + y;
+    }
+    return t;
+  }
+
   // Primary path: rewrite the navigation BEFORE the wrong map ever loads.
-  // Covers both the hamburger World item and the room globe button (both
-  // hashbang <a>). Capture phase runs before the link/router handler, so
-  // preventing it and setting the preferred hash lands straight on the right
-  // app with no classic flash.
+  // Two entry points, two shapes:
+  //  (a) hashbang <a> links -- the hamburger menu's World item;
+  //  (b) the room view's globe <button ng-click="Room.goToMap()"> -- not an
+  //      anchor, and it always targets the CLASSIC map, which the old
+  //      AngularJS client then refuses to hand off to the unknown /map2 route
+  //      (so a post-hoc redirect leaves you stuck on classic).
+  // Capture phase runs before the link/ng-click handler, so preventing it and
+  // navigating straight to the preferred hash lands on the right app cleanly.
   document.addEventListener(
     "click",
     function (e) {
       var pref = getMapPref();
       if (!pref) return;
+      var want2 = pref === "map2";
+
+      // (a) hashbang anchor map links.
       var a = e.target.closest && e.target.closest("a[href]");
-      if (!a) return;
-      var href = a.getAttribute("href") || "";
-      var hash = href.indexOf("#") >= 0 ? href.slice(href.indexOf("#")) : "";
-      var r = parseMapHash(hash);
-      if (!r) return; // not a world-map link
-      if (r.isMap2 === (pref === "map2")) return; // already preferred
-      e.preventDefault();
-      e.stopPropagation();
-      location.hash = buildMapTarget(pref === "map2", r.rest);
+      if (a) {
+        var href = a.getAttribute("href") || "";
+        var hash = href.indexOf("#") >= 0 ? href.slice(href.indexOf("#")) : "";
+        var r = parseMapHash(hash);
+        if (r && r.isMap2 !== want2) {
+          e.preventDefault();
+          e.stopPropagation();
+          location.hash = buildMapTarget(want2, r.rest);
+          return;
+        }
+      }
+
+      // (b) room globe button -> goToMap() (classic). Only redirect to alpha.
+      if (want2) {
+        var g = e.target.closest && e.target.closest("[ng-click]");
+        var ngc = (g && g.getAttribute("ng-click")) || "";
+        if (/goToMap\b/.test(ngc)) {
+          e.preventDefault();
+          e.stopPropagation();
+          location.hash = roomToMap2Hash();
+        }
+      }
     },
     true,
   );
