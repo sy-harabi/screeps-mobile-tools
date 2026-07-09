@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.8.2
+// @version      0.8.3
 // @description  Mobile UX fixes for screeps.com: alpha-map (map2) finger pan & pinch zoom, touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @author       sy-harabi
 // @license      MIT
@@ -36,7 +36,7 @@
 
   // Keep in sync with the @version header above; the dump prints this so the
   // on-screen header never lies about which build is loaded.
-  var SM_VERSION = "0.8.2";
+  var SM_VERSION = "0.8.3";
 
   var CONFIG = {
     // Apply the CSS only on coarse-pointer (touch) devices.
@@ -1348,6 +1348,42 @@
     true,
   );
 
+  // Diagnostic: rolling log of the last few clicks (element + nav target) so
+  // an un-intercepted nav control (e.g. the room globe button, if it isn't a
+  // plain <a href>) can be identified from the dump and then targeted.
+  pickerInfo.clickLog = [];
+  function smDescribeEl(el) {
+    if (!el || !el.tagName) return "(none)";
+    var s = el.tagName.toLowerCase();
+    if (el.id) s += "#" + el.id;
+    if (typeof el.className === "string" && el.className.trim())
+      s += "." + el.className.trim().split(/\s+/).slice(0, 3).join(".");
+    var href = el.getAttribute && el.getAttribute("href");
+    if (href) s += "[href=" + href + "]";
+    var ngc =
+      el.getAttribute &&
+      (el.getAttribute("ng-click") || el.getAttribute("data-ng-click"));
+    if (ngc) s += "[ng-click=" + ngc.slice(0, 48) + "]";
+    return s;
+  }
+  document.addEventListener(
+    "click",
+    function (e) {
+      try {
+        var chain = [],
+          n = e.target,
+          guard = 0;
+        while (n && n.tagName && guard++ < 5) {
+          chain.push(smDescribeEl(n));
+          n = n.parentElement;
+        }
+        pickerInfo.clickLog.push(chain.join(" < "));
+        if (pickerInfo.clickLog.length > 6) pickerInfo.clickLog.shift();
+      } catch (err) {}
+    },
+    true,
+  );
+
   // Build the unified gear panel (5d) now that the map-pref helpers exist.
   buildSettings();
 
@@ -1521,6 +1557,10 @@
         (onMap2() ? "yes" : "no"),
     );
     lines.push("defaultMap pref: " + (getMapPref() || "auto"));
+    lines.push(
+      "recent clicks:\n  " +
+        ((pickerInfo.clickLog && pickerInfo.clickLog.join("\n  ")) || "(none)"),
+    );
 
     var ctrl = panelCtrl();
     lines.push(
