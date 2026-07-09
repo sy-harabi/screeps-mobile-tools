@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.7.9
+// @version      0.8.0
 // @description  Mobile UX fixes for screeps.com: alpha-map (map2) finger pan & pinch zoom, touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @author       sy-harabi
 // @license      MIT
@@ -36,7 +36,7 @@
 
   // Keep in sync with the @version header above; the dump prints this so the
   // on-screen header never lies about which build is loaded.
-  var SM_VERSION = "0.7.9";
+  var SM_VERSION = "0.8.0";
 
   var CONFIG = {
     // Apply the CSS only on coarse-pointer (touch) devices.
@@ -117,6 +117,18 @@
     // history view's right-panel toggle sits in the bottom-right corner).
     sizeControlRight: 52,
     sizeControlBottom: 8,
+    // Default world-map toggle. Screeps has two world maps: the classic
+    // #!/map and the newer "alpha" #!/map2. A small floating button cycles
+    // your preference auto -> classic -> alpha; once set (not "auto"), any
+    // navigation to the other map is redirected to your choice, preserving
+    // the shard/position suffix. The choice persists in
+    // localStorage["sm.defaultMap"] (survives reloads/auto-updates). "auto"
+    // enforces nothing, so by default the client's own behavior is untouched.
+    // Set false to hide the button and disable the feature.
+    mapDefaultToggle: true,
+    // Distance (px) of the map toggle button from the bottom-left corner.
+    mapToggleLeft: 8,
+    mapToggleBottom: 8,
   };
 
   /* ------------------------------------------------------------------ */
@@ -1197,6 +1209,83 @@
   buildSizeControl();
 
   /* ------------------------------------------------------------------ */
+  /* 5e. Default world-map toggle (classic #!/map <-> alpha #!/map2)     */
+  /*                                                                     */
+  /* Pick which world map is your default and remember it: once set,     */
+  /* navigating to the other one is redirected to your choice, with the  */
+  /* shard/position suffix preserved. Preference lives in                */
+  /* localStorage["sm.defaultMap"]; a floating button cycles             */
+  /* auto -> classic -> alpha. "auto" enforces nothing.                  */
+  /* ------------------------------------------------------------------ */
+
+  var MAP_PREF_KEY = "sm.defaultMap";
+  function getMapPref() {
+    try {
+      var v = localStorage.getItem(MAP_PREF_KEY);
+      return v === "map" || v === "map2" ? v : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  function setMapPref(v) {
+    try {
+      if (v) localStorage.setItem(MAP_PREF_KEY, v);
+      else localStorage.removeItem(MAP_PREF_KEY);
+    } catch (e) {}
+  }
+
+  // Match a world-map hash. Returns { isMap2, rest } where rest is the
+  // /shard?pos=... suffix (or ""), or null if the hash isn't a map route.
+  // The lookahead keeps #!/market etc. from matching.
+  function parseMapHash(hash) {
+    var m = (hash || "").match(/^#!\/map(2)?($|[\/?].*)$/);
+    return m ? { isMap2: m[1] === "2", rest: m[2] || "" } : null;
+  }
+  function enforceMapPref() {
+    var pref = getMapPref();
+    if (!pref) return; // "auto": leave the client's navigation alone
+    var r = parseMapHash(location.hash);
+    if (!r) return; // not on a world map right now
+    var want2 = pref === "map2";
+    if (r.isMap2 === want2) return; // already the preferred map
+    // Swap only the map/map2 token; keep the shard/pos suffix verbatim.
+    location.replace("#!/map" + (want2 ? "2" : "") + r.rest);
+  }
+  window.addEventListener("hashchange", enforceMapPref);
+  enforceMapPref(); // apply on initial load too
+
+  function buildMapToggle() {
+    if (!CONFIG.mapDefaultToggle) return;
+    if (!document.body || document.getElementById("sm-map-toggle")) return;
+    var btn = document.createElement("button");
+    btn.id = "sm-map-toggle";
+    btn.style.cssText =
+      "position:fixed;left:" +
+      CONFIG.mapToggleLeft +
+      "px;bottom:" +
+      CONFIG.mapToggleBottom +
+      "px;z-index:99990;height:34px;padding:0 12px;" +
+      "font:14px/1 sans-serif;color:#eee;background:#3a3a3a;" +
+      "border:1px solid #666;border-radius:17px;opacity:0.85;";
+    function relabel() {
+      var p = getMapPref();
+      btn.textContent =
+        "🗺 " + (p === "map2" ? "alpha" : p === "map" ? "classic" : "auto");
+    }
+    btn.addEventListener("click", function () {
+      var p = getMapPref();
+      // Cycle auto -> classic -> alpha -> auto.
+      var next = p === null ? "map" : p === "map" ? "map2" : null;
+      setMapPref(next);
+      relabel();
+      enforceMapPref();
+    });
+    relabel();
+    document.body.appendChild(btn);
+  }
+  buildMapToggle();
+
+  /* ------------------------------------------------------------------ */
   /* 6. Diagnostics: window.__smDump() or triple-tap the navbar logo     */
   /* ------------------------------------------------------------------ */
 
@@ -1365,6 +1454,7 @@
         " onMap2=" +
         (onMap2() ? "yes" : "no"),
     );
+    lines.push("defaultMap pref: " + (getMapPref() || "auto"));
 
     var ctrl = panelCtrl();
     lines.push(
