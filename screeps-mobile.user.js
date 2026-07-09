@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.7.8
-// @description  Mobile UX fixes for screeps.com: touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
+// @version      0.7.9
+// @description  Mobile UX fixes for screeps.com: alpha-map (map2) finger pan & pinch zoom, touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @author       sy-harabi
 // @license      MIT
 // @match        https://screeps.com/*
@@ -36,7 +36,7 @@
 
   // Keep in sync with the @version header above; the dump prints this so the
   // on-screen header never lies about which build is loaded.
-  var SM_VERSION = "0.7.8";
+  var SM_VERSION = "0.7.9";
 
   var CONFIG = {
     // Apply the CSS only on coarse-pointer (touch) devices.
@@ -1383,296 +1383,76 @@
   }
 
   /* ------------------------------------------------------------------ */
-  /* map2 probe: reconnaissance for the alpha-map pan/zoom bridge.       */
+  /* map2 probe: health-check for the alpha-map pan/zoom bridge (5c-2).  */
   /*                                                                     */
-  /* map2 (#!/map2) is an app2 WebGL component (app-world-map-map) built */
-  /* on a newer framework than the old client's AngularJS. Synthetic     */
-  /* events never worked (0.6.2-0.6.4). The plan is to drive its own     */
-  /* pan/zoom API directly, which first needs to know: which framework,  */
-  /* the component instance, and which of its props/methods move the     */
-  /* camera. This probe dumps exactly that so it can be read off-device. */
-  /* Open #!/map2 first, then triple-tap the burger (or call __smDump).  */
+  /* Verifies the component instances still resolve and that the exact   */
+  /* methods/values the bridge depends on are present -- so if a client  */
+  /* update renames or moves them, this dump shows precisely what broke. */
+  /* Reuses the same map2Ctx()/map2Center()/... helpers the bridge uses. */
+  /* Open #!/map2 first, then triple-tap the burger (or __smDump()).     */
   /* ------------------------------------------------------------------ */
   function map2Probe() {
-    var L = ["=== map2 probe v2 ==="];
-    L.push("hash: " + location.hash);
-
-    // Angular Ivy debug API surface (ng.getComponent etc.) + PIXI version.
-    if (window.ng && typeof window.ng === "object") {
-      L.push("ng keys: " + Object.keys(window.ng).slice(0, 40).join(","));
-    } else {
-      L.push("ng: " + typeof window.ng);
-    }
-    if (window.PIXI) L.push("PIXI.VERSION: " + window.PIXI.VERSION);
-
-    // Structural describe: constructor, own keys, prototype methods; recurse
-    // into camera/zoom/pan-ish children so the control surface is visible.
-    function describe(o, depth, prefix, seen) {
-      if (o == null) return String(o);
-      var t = typeof o;
-      if (t === "function") return "fn";
-      if (t !== "object") return JSON.stringify(o);
-      if (seen.indexOf(o) >= 0) return "[circular]";
-      seen.push(o);
-      var cn = (o.constructor && o.constructor.name) || "?";
-      var keys = [];
-      try {
-        keys = Object.keys(o);
-      } catch (e) {}
-      var methods = [];
-      var proto = Object.getPrototypeOf(o);
-      if (proto && proto !== Object.prototype && proto !== Array.prototype) {
-        Object.getOwnPropertyNames(proto).forEach(function (m) {
-          if (m === "constructor") return;
-          try {
-            if (typeof o[m] === "function") methods.push(m);
-          } catch (e) {}
-        });
-      }
-      var s =
-        cn +
-        " {keys:[" +
-        keys.slice(0, 60).join(",") +
-        "]" +
-        (methods.length ? " methods:[" + methods.slice(0, 60).join(",") + "]" : "") +
-        "}";
-      if (depth > 0) {
-        keys.forEach(function (k) {
-          if (
-            !/cam|view|zoom|scale|center|pos|pan|map|scene|render|control|pixi|stage|state|store|transform|offset|coord|bounds|tile/i.test(
-              k,
-            )
-          )
-            return;
-          var child;
-          try {
-            child = o[k];
-          } catch (e) {
-            return;
-          }
-          if (child && typeof child === "object") {
-            s +=
-              "\n" + prefix + "." + k + " = " + describe(child, depth - 1, prefix + "  ", seen);
-          } else if (typeof child !== "function") {
-            s += "\n" + prefix + "." + k + " = " + JSON.stringify(child);
-          }
-        });
-      }
-      return s;
-    }
-
-    // This build's `ng` global has probe/coreTokens but NOT getComponent, so
-    // it is the LEGACY debug API: ng.probe(el) -> DebugElement with
-    // .componentInstance / .context / .injector / .providerTokens.
-    var ngObj = window.ng || {};
-    function probeOf(el) {
-      try {
-        if (typeof ngObj.probe === "function") return ngObj.probe(el) || null;
-      } catch (e) {}
-      return null;
-    }
-    function compOf(el) {
-      try {
-        if (typeof ngObj.getComponent === "function") {
-          var c = ngObj.getComponent(el);
-          if (c) return c;
-        }
-      } catch (e) {}
-      var d = probeOf(el);
-      if (d)
-        return (
-          d.componentInstance ||
-          (d.context && (d.context.$implicit || d.context)) ||
-          null
-        );
-      return null;
-    }
-
-    // Walk the app2 subtree; ng.probe(el).componentInstance identifies hosts.
-    var scanRoot =
-      document.querySelector("app2-router-outlet") ||
-      document.querySelector("app-world-map-base") ||
-      document.body;
-    var host =
-      document.querySelector("app-world-map-map") ||
-      document.querySelector("app-world-map-base");
-    var els = [scanRoot].concat(
-      Array.prototype.slice.call(scanRoot.querySelectorAll("*"), 0, 600),
-    );
-    var comps = [];
-    var seenInst = [];
-    els.forEach(function (el) {
-      var c = compOf(el);
-      if (c && seenInst.indexOf(c) < 0) {
-        seenInst.push(c);
-        comps.push({
-          tag: el.tagName.toLowerCase(),
-          name: (c.constructor && c.constructor.name) || "?",
-          inst: c,
-        });
-      }
-    });
-    L.push("component hosts found: " + comps.length);
-    comps.forEach(function (x) {
-      L.push("  <" + x.tag + "> -> " + x.name);
-    });
-
-    // Legacy DebugElement introspection on the map host chain: exposes the
-    // component instance, its template context, and the injected services
-    // (providerTokens) -- the camera/viewport may live in a service.
-    [host, document.querySelector("app-world-map-base"), scanRoot].forEach(
-      function (el) {
-        if (!el) return;
-        var d = probeOf(el);
-        var tag = "<" + el.tagName.toLowerCase() + ">";
-        if (!d) {
-          L.push("probe(" + tag + "): null");
-          return;
-        }
-        L.push("");
-        L.push("### probe(" + tag + "):");
-        L.push(
-          "  componentInstance: " +
-            (d.componentInstance ? describe(d.componentInstance, 3, "    ", []) : "null"),
-        );
-        if (d.providerTokens && d.providerTokens.length) {
-          L.push(
-            "  providerTokens: " +
-              d.providerTokens
-                .map(function (t) {
-                  return (t && t.name) || String(t);
-                })
-                .slice(0, 50)
-                .join(","),
-          );
-        }
-        if (d.context && d.context !== d.componentInstance) {
-          L.push("  context: " + describe(d.context, 2, "    ", []));
-        }
-      },
+    var L = ["=== map2 probe ==="];
+    L.push("hash: " + location.hash + " onMap2=" + (onMap2() ? "yes" : "no"));
+    L.push(
+      "ng: " +
+        (window.ng
+          ? "keys=" + Object.keys(window.ng).slice(0, 8).join(",")
+          : typeof window.ng) +
+        " | PIXI: " +
+        (window.PIXI ? window.PIXI.VERSION : "absent"),
     );
 
-    // Deep-describe any map-related component instances we discovered.
-    var mapComps = comps.filter(function (x) {
-      return /map|world|camera/i.test(x.name) || /map|world/i.test(x.tag);
-    });
-    if (!mapComps.length && comps.length) mapComps = comps.slice(0, 4);
-    mapComps.forEach(function (x) {
-      L.push("");
-      L.push("### <" + x.tag + "> " + x.name + ":");
-      L.push(describe(x.inst, 3, "  ", []));
-    });
-    if (!comps.length) {
-      L.push("component instance: NOT RESOLVED (ng.probe returned nothing)");
+    var ctx = map2Ctx();
+    if (!ctx) {
+      L.push(
+        "ctx: NOT RESOLVED (ng.probe / app-world-map-base missing) -- open #!/map2",
+      );
+      return L.join("\n");
     }
+    var base = ctx.base,
+      mc = ctx.mc;
+    L.push(
+      "base: " +
+        (base ? base.constructor && base.constructor.name : "null") +
+        " | container: " +
+        (mc ? mc.constructor && mc.constructor.name : "null"),
+    );
 
-    // ---- control surface (v4): exact live VALUES + method sources -------
-    // Read-only: getValue() on the center/scale/bound subjects and the source
-    // text of the setter/getter methods, so pan/zoom math can be written
-    // against the real signatures instead of guessed ones. No mutation here.
-    function srcOf(obj, name) {
-      try {
-        var f = obj && obj[name];
-        return typeof f === "function"
-          ? f.toString().replace(/\s+/g, " ").slice(0, 240)
-          : "(not a fn)";
-      } catch (e) {
-        return "err:" + (e && e.message);
-      }
-    }
-    function callVal(fn) {
-      try {
-        return JSON.stringify(fn());
-      } catch (e) {
-        return "err:" + (e && e.message);
-      }
-    }
-    var baseD = probeOf(document.querySelector("app-world-map-base"));
-    var base = baseD && baseD.componentInstance;
-    if (base) {
-      L.push("");
-      L.push("=== control surface ===");
-      L.push("base.scale=" + JSON.stringify(base.scale) + " min/max/delta=" + base.MIN_SCALE + "/" + base.MAX_SCALE + "/" + base.SCALE_DELTA);
-      if (base._centerSbj)
-        L.push("base._centerSbj.getValue()=" + callVal(function () { return base._centerSbj.getValue(); }));
-      if (base._scaleSbj)
-        L.push("base._scaleSbj.getValue()=" + callVal(function () { return base._scaleSbj.getValue(); }));
-      if (base._boundSbj)
-        L.push("base._boundSbj.getValue()=" + callVal(function () { return base._boundSbj.getValue(); }));
-      L.push("base.onChangeCenter=" + srcOf(base, "onChangeCenter"));
-      L.push("base.onChangeScale=" + srcOf(base, "onChangeScale"));
-      L.push("base.onChangeScalePercent=" + srcOf(base, "onChangeScalePercent"));
-      L.push("base.onBound=" + srcOf(base, "onBound"));
+    // Live values the pan/zoom math relies on.
+    var bound = null;
+    try {
+      bound = mc && mc.getBound && mc.getBound();
+    } catch (e) {}
+    var ppr = map2PxPerRoom(mc);
+    L.push(
+      "center=" +
+        JSON.stringify(map2Center(ctx)) +
+        " scale=" +
+        JSON.stringify(map2Scale(ctx)),
+    );
+    L.push(
+      "bound=" + JSON.stringify(bound) + " pxPerRoom=" + (ppr ? ppr.toFixed(2) : "?"),
+    );
 
-      var mref = base.mapRef;
-      if (mref) {
-        L.push("mapRef.setCenter=" + srcOf(mref, "setCenter"));
-        L.push("mapRef.setScale=" + srcOf(mref, "setScale"));
-        L.push("mapRef.onCenter=" + srcOf(mref, "onCenter"));
-        L.push("mapRef.onScale=" + srcOf(mref, "onScale"));
-      }
-      var mc =
-        mref && mref.screepsMap && mref.screepsMap._mapContainer;
-      if (mc) {
-        L.push("--- MapContainer ---");
-        L.push("mc._width/_height=" + mc._width + "/" + mc._height);
-        L.push("mc.getCenter()=" + callVal(function () { return mc.getCenter(); }));
-        L.push("mc.getBound()=" + callVal(function () { return mc.getBound(); }));
-        L.push("mc.move=" + srcOf(mc, "move"));
-        L.push("mc.setCenter=" + srcOf(mc, "setCenter"));
-        L.push("mc.getCenter=" + srcOf(mc, "getCenter"));
-        L.push("mc.getBound=" + srcOf(mc, "getBound"));
-        L.push("mc.scale=" + srcOf(mc, "scale"));
-        L.push("mc.setScale=" + srcOf(mc, "setScale"));
-        try {
-          var tf = mc._map && mc._map.transform;
-          if (tf) {
-            L.push("mc._map.transform.position={x:" + (tf.position && tf.position.x) + ",y:" + (tf.position && tf.position.y) + "}");
-            L.push("mc._map.transform.scale={x:" + (tf.scale && tf.scale.x) + ",y:" + (tf.scale && tf.scale.y) + "}");
-          }
-        } catch (e) {
-          L.push("mc._map.transform err:" + (e && e.message));
-        }
-      } else {
-        L.push("MapContainer: unreachable via base.mapRef.screepsMap._mapContainer");
-      }
-    } else {
-      L.push("control surface: base component not resolved");
+    // Presence of the exact methods the bridge calls (y = ok, N = missing).
+    function has(o, m) {
+      return o && typeof o[m] === "function" ? "y" : "N";
     }
-
-    // PIXI probe: hunt for the Application/stage/viewport/camera holding the
-    // pan/zoom transform among all discovered instances (comps + contexts).
-    if (window.PIXI) {
-      try {
-        var viewportLike = [];
-        seenInst.forEach(function (c) {
-          Object.keys(c).forEach(function (k) {
-            var v;
-            try {
-              v = c[k];
-            } catch (e) {
-              return;
-            }
-            if (v && typeof v === "object") {
-              var cn = v.constructor && v.constructor.name;
-              if (
-                cn &&
-                /Viewport|Camera|Stage|Application|Container|Renderer|World/i.test(cn) &&
-                viewportLike.indexOf(v) < 0
-              ) {
-                viewportLike.push(v);
-                L.push("");
-                L.push("### PIXI-ish ." + k + " (" + cn + "):");
-                L.push(describe(v, 2, "  ", []));
-              }
-            }
-          });
-        });
-        if (!viewportLike.length) L.push("PIXI: no Viewport/Camera field on comps");
-      } catch (e) {
-        L.push("PIXI probe threw: " + (e && e.message));
-      }
-    }
+    L.push(
+      "methods base.onBound=" +
+        has(base, "onBound") +
+        " base.onChangeScale=" +
+        has(base, "onChangeScale") +
+        " | mc.setCenter=" +
+        has(mc, "setCenter") +
+        " mc.setScale=" +
+        has(mc, "setScale") +
+        " mc.getCenter=" +
+        has(mc, "getCenter") +
+        " mc.getBound=" +
+        has(mc, "getBound"),
+    );
     return L.join("\n");
   }
 
