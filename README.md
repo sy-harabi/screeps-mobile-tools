@@ -12,7 +12,7 @@ Userscript that fixes the worst mobile UX problems of the screeps.com web client
 | Accidentally pinch-zooming the whole UI | v0.4 locks the browser's page zoom (`lockZoom` → `user-scalable=no`), so the UI can never be pinch-zoomed and can't get "stuck" zoomed in. The earlier floating ⛶ zoom-reset button is gone — with page zoom locked there is nothing to reset. |
 | Pinching only zoomed the whole page, not the map | v0.5 (`pinchZoomMap`): a two-finger pinch over the room game field / world map is translated into the client's own zoom (synthetic wheel events at the pinch centroid), so **only the map zooms while the UI stays fixed**. The client's +/- zoom controls (enlarged for touch) still work too. |
 | Can't pan the world map by finger | v0.6 (`worldMapPan`): the client's world map pans on mouse drag but ignores touch, so a finger drag did nothing. The script bridges a single-finger touch to the mouse drag sequence (`mousedown`→`mousemove`→`mouseup`); a finger tap with no drag is forwarded as a click so tapping a room still navigates. Two-finger pinch still zooms. |
-| Can't pan the alpha map (`#!/map2`) by finger | **Unsolved / not attempted via events.** map2 is an app2 WebGL component (`app-world-map-map`) whose drag-pan relies on real browser pointer-capture semantics. Every synthetic-event approach (touch, mouse, pointer — 0.6.2 through 0.6.4) failed: injected events were misread as a *room click*, causing accidental navigation instead of a pan. So map2 is left untouched (`map2TouchAction` off, not in the pan/zoom bridge selectors). **On mobile, use the old world map (`#!/map`) instead — it is pannable/zoomable via the bridges above.** A proper fix would call map2's own Angular component pan/zoom API directly (would need live probing of the `app-world-map-map` component instance). |
+| Can't pan/zoom the alpha map (`#!/map2`) by finger | v0.7.8 (`map2Pan` / `map2Zoom`): every synthetic-event attempt (touch, mouse, pointer — 0.6.2 through 0.6.4) failed, because injected events were misread as a *room click* and caused accidental navigation instead of a pan. map2 is an app2 Angular + PIXI component, so the script now calls its **own model API directly** — no synthetic events, so a room click can never be spoofed. A single-finger drag drives the map container's `setCenter` (the pixel↔room conversion is derived live from `getBound()`, so it stays correct at any zoom) and re-runs the room draw pipeline via `BaseComponent.onBound`; a two-finger pinch drives `setScale`. A sub-threshold tap is left to the client's native handler, so tapping a room still navigates. The live component instances are resolved through the legacy `ng.probe()` debug API. |
 | Can't resize the Script/Console/Memory panel by touch | The client's resize handle only listens to mouse events. The script bridges touch drags to synthetic mouse events, so dragging the top strip of the panel resizes it (height persists via the client's own localStorage key). Double-tap the handle to cycle 35% / 60% / 85% height presets. |
 | Top-left buttons (burger/logo vs World/overview) overlap | On narrow screens the navbar's right-side resource/CPU indicators wrap it to a second row, which collides with the room view's left controls. The script hides those indicators on touch devices so the navbar stays a single 42px row. |
 
@@ -69,7 +69,20 @@ Edit the `CONFIG` block at the top of the script:
   bridged to the client's own zoom (synthetic wheel events), so only the map
   zooms, not the UI. Tuning: `pinchStepPx` (pinch travel per wheel tick,
   smaller = more sensitive), `wheelDelta` (client zoom step per tick),
-  `invertPinch` (set `true` if pinch-out zooms out instead of in).
+  `invertPinch` (set `true` if pinch-out zooms out instead of in). This is the
+  bridge for the room game field and the **old** world map; the alpha map has
+  its own path (see `map2Zoom`).
+- `map2Pan` / `map2Zoom` — when `true` (default), enable single-finger pan and
+  two-finger pinch-zoom on the **alpha** world map (`#!/map2`). Unlike the old
+  map, these drive map2's own Angular/PIXI component API directly instead of
+  synthetic events (which never worked there). `map2InvertX` / `map2InvertY`
+  flip the pan direction per axis if a drag moves the map the wrong way on your
+  device/orientation; `invertPinch` also applies to map2 zoom.
+- `map2TouchAction` — when `true` (default, and forced on whenever `map2Pan`
+  or `map2Zoom` is on), sets `touch-action: none` on the map2 canvas so the
+  browser can't steal the drag as a scroll / pull-to-refresh before the pan
+  handler owns it. Tapping a room still navigates (touch-action doesn't affect
+  taps).
 
 ## Diagnostics
 
