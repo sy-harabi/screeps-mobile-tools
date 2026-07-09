@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.8.1
+// @version      0.8.2
 // @description  Mobile UX fixes for screeps.com: alpha-map (map2) finger pan & pinch zoom, touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @author       sy-harabi
 // @license      MIT
@@ -36,7 +36,7 @@
 
   // Keep in sync with the @version header above; the dump prints this so the
   // on-screen header never lies about which build is loaded.
-  var SM_VERSION = "0.8.1";
+  var SM_VERSION = "0.8.2";
 
   var CONFIG = {
     // Apply the CSS only on coarse-pointer (touch) devices.
@@ -108,27 +108,24 @@
     // drag as a scroll / pull-to-refresh before our handler owns it. Tapping
     // a room still navigates (touch-action doesn't affect taps).
     map2TouchAction: true,
-    // Show a small floating A-/A+ control (bottom-right) to change the whole
-    // UI size live. The chosen size persists in localStorage (survives
-    // reloads and auto-updates), independent of viewportWidth above.
+    // Show the floating gear (⚙) settings panel (bottom-right). Its "Size"
+    // row changes the whole UI size live (A- / A+); the chosen size persists
+    // in localStorage (survives reloads and auto-updates), independent of
+    // viewportWidth above. Set false to hide the Size row.
     sizeControl: true,
-    // Distance (px) of the A± control from the bottom-right corner. Nudge
+    // Distance (px) of the gear panel from the bottom-right corner. Nudge
     // sizeControlRight up if it collides with a client button (e.g. the
     // history view's right-panel toggle sits in the bottom-right corner).
     sizeControlRight: 52,
     sizeControlBottom: 8,
-    // Default world-map toggle. Screeps has two world maps: the classic
-    // #!/map and the newer "alpha" #!/map2. A small floating button cycles
-    // your preference auto -> classic -> alpha; once set (not "auto"), any
-    // navigation to the other map is redirected to your choice, preserving
-    // the shard/position suffix. The choice persists in
-    // localStorage["sm.defaultMap"] (survives reloads/auto-updates). "auto"
-    // enforces nothing, so by default the client's own behavior is untouched.
-    // Set false to hide the button and disable the feature.
+    // Default world-map preference, set from the gear panel's "Map" row.
+    // Screeps has two world maps: the classic #!/map and the newer "alpha"
+    // #!/map2. Pick auto / classic / alpha; once set (not "auto"), any
+    // navigation to the other map is steered to your choice. The choice
+    // persists in localStorage["sm.defaultMap"] (survives reloads/updates).
+    // "auto" enforces nothing, so the client's own behavior is untouched.
+    // Set false to hide the Map row and disable the feature.
     mapDefaultToggle: true,
-    // Distance (px) of the map toggle button from the bottom-left corner.
-    mapToggleLeft: 8,
-    mapToggleBottom: 8,
   };
 
   /* ------------------------------------------------------------------ */
@@ -1125,80 +1122,133 @@
   });
 
   /* ------------------------------------------------------------------ */
-  /* 5d. Floating UI-size control (A- / A+)                              */
+  /* 5d. Floating settings panel (gear): UI size + default map           */
   /*                                                                     */
-  /* A small bottom-right button opens an A- / scale / A+ / reset row.   */
-  /* Each step rewrites the viewport meta (whole UI resizes live) and    */
-  /* persists the width to localStorage, so the size survives reloads    */
-  /* and auto-updates. Scale shown as 1280/width, clamped 1.0x .. 3.0x.  */
+  /* One bottom-right gear button opens a panel with two rows:           */
+  /*   Map:  auto / classic / alpha  (see 5e for what these do)          */
+  /*   Size: A- / scale / A+ / reset (rewrites the viewport meta live,   */
+  /*         persisted to localStorage; scale = 1280/width, 1.0x..3.0x)  */
+  /* Consolidating both here keeps a single entry point instead of       */
+  /* scattered floating buttons. getMapPref/setMapPref/enforceMapPref    */
+  /* live in 5e (hoisted); this is why buildSettings() is CALLED from    */
+  /* the end of 5e, once those and their localStorage key exist.         */
   /* ------------------------------------------------------------------ */
 
-  function buildSizeControl() {
-    if (!CONFIG.sizeControl) return;
-    if (!document.body || document.getElementById("sm-size-control")) return;
+  function buildSettings() {
+    var showSize = CONFIG.sizeControl;
+    var showMap = CONFIG.mapDefaultToggle;
+    if (!showSize && !showMap) return;
+    if (!document.body || document.getElementById("sm-settings")) return;
 
-    function mkBtn(txt) {
+    function mkBtn(txt, big) {
       var b = document.createElement("button");
       b.textContent = txt;
       b.style.cssText =
-        "min-width:34px;height:34px;font:18px/1 sans-serif;color:#eee;" +
-        "background:#3a3a3a;border:1px solid #666;border-radius:6px;padding:0;";
+        "min-width:34px;height:34px;padding:0 8px;color:#eee;" +
+        "background:#3a3a3a;border:1px solid #666;border-radius:6px;font:" +
+        (big ? "18px" : "13px") +
+        "/1 sans-serif;";
       return b;
+    }
+    function mkRow(labelText) {
+      var row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;gap:6px;";
+      var l = document.createElement("span");
+      l.textContent = labelText;
+      l.style.cssText = "min-width:40px;color:#9bd;font:12px/1 sans-serif;";
+      row.appendChild(l);
+      return row;
     }
 
     var wrap = document.createElement("div");
-    wrap.id = "sm-size-control";
+    wrap.id = "sm-settings";
     wrap.style.cssText =
       "position:fixed;right:" +
       CONFIG.sizeControlRight +
       "px;bottom:" +
       CONFIG.sizeControlBottom +
-      "px;z-index:99990;display:flex;align-items:center;gap:6px;";
+      "px;z-index:99990;display:flex;flex-direction:column;" +
+      "align-items:flex-end;gap:6px;";
 
     var panel = document.createElement("div");
     panel.style.cssText =
-      "display:none;align-items:center;gap:6px;padding:4px 6px;" +
-      "background:rgba(22,22,22,0.95);border:1px solid #666;border-radius:8px;";
+      "display:none;flex-direction:column;gap:8px;padding:8px 10px;" +
+      "background:rgba(22,22,22,0.96);border:1px solid #666;border-radius:10px;";
 
-    var minus = mkBtn("A−");
-    var label = document.createElement("span");
-    label.style.cssText =
-      "min-width:46px;text-align:center;color:#ddd;font:15px/1 sans-serif;";
-    var plus = mkBtn("A＋");
-    var reset = mkBtn("↺");
-
-    function refresh() {
-      label.textContent = (1280 / smCurrentWidth()).toFixed(1) + "×";
+    // --- Map row: auto / classic / alpha, highlighting the active choice.
+    if (showMap) {
+      var mapRow = mkRow("Map");
+      var mapOpts = [
+        ["auto", null],
+        ["classic", "map"],
+        ["alpha", "map2"],
+      ];
+      var mapBtns = [];
+      var syncMap = function () {
+        var cur = getMapPref(); // null | "map" | "map2"
+        mapBtns.forEach(function (b) {
+          var on = (b.getAttribute("data-pref") || "") === (cur || "");
+          b.style.background = on ? "#2d6cdf" : "#3a3a3a";
+          b.style.borderColor = on ? "#5a8ff0" : "#666";
+        });
+      };
+      mapOpts.forEach(function (o) {
+        var b = mkBtn(o[0], false);
+        b.setAttribute("data-pref", o[1] || "");
+        b.addEventListener("click", function () {
+          setMapPref(o[1]);
+          syncMap();
+          enforceMapPref();
+        });
+        mapBtns.push(b);
+        mapRow.appendChild(b);
+      });
+      syncMap();
+      panel.appendChild(mapRow);
     }
-    function step(deltaScale) {
-      var s = 1280 / smCurrentWidth();
-      s = Math.max(1.0, Math.min(3.0, Math.round((s + deltaScale) * 10) / 10));
-      smApplyViewport(smClampWidth(1280 / s), true);
+
+    // --- Size row: A- / scale / A+ / reset.
+    if (showSize) {
+      var sizeRow = mkRow("Size");
+      var minus = mkBtn("A−", true);
+      var label = document.createElement("span");
+      label.style.cssText =
+        "min-width:44px;text-align:center;color:#ddd;font:15px/1 sans-serif;";
+      var plus = mkBtn("A＋", true);
+      var reset = mkBtn("↺", true);
+      var refresh = function () {
+        label.textContent = (1280 / smCurrentWidth()).toFixed(1) + "×";
+      };
+      var step = function (deltaScale) {
+        var s = 1280 / smCurrentWidth();
+        s = Math.max(1.0, Math.min(3.0, Math.round((s + deltaScale) * 10) / 10));
+        smApplyViewport(smClampWidth(1280 / s), true);
+        refresh();
+      };
+      minus.addEventListener("click", function () {
+        step(-0.1);
+      });
+      plus.addEventListener("click", function () {
+        step(0.1);
+      });
+      reset.addEventListener("click", function () {
+        smApplyViewport(smClampWidth(CONFIG.viewportWidth || 1280), true);
+        refresh();
+      });
       refresh();
+      sizeRow.appendChild(minus);
+      sizeRow.appendChild(label);
+      sizeRow.appendChild(plus);
+      sizeRow.appendChild(reset);
+      panel.appendChild(sizeRow);
     }
-    minus.addEventListener("click", function () {
-      step(-0.1);
-    }); // smaller UI
-    plus.addEventListener("click", function () {
-      step(0.1);
-    }); // larger UI
-    reset.addEventListener("click", function () {
-      smApplyViewport(smClampWidth(CONFIG.viewportWidth || 1280), true);
-      refresh();
-    });
 
-    panel.appendChild(minus);
-    panel.appendChild(label);
-    panel.appendChild(plus);
-    panel.appendChild(reset);
-
-    var toggle = mkBtn("A±");
+    var toggle = mkBtn("⚙", true);
     toggle.style.borderRadius = "50%";
     toggle.style.opacity = "0.85";
     toggle.addEventListener("click", function () {
       var open = panel.style.display !== "none";
       panel.style.display = open ? "none" : "flex";
-      if (!open) refresh();
     });
 
     wrap.appendChild(panel);
@@ -1206,16 +1256,21 @@
     document.body.appendChild(wrap);
   }
 
-  buildSizeControl();
-
   /* ------------------------------------------------------------------ */
-  /* 5e. Default world-map toggle (classic #!/map <-> alpha #!/map2)     */
+  /* 5e. Default world-map preference (classic #!/map <-> alpha #!/map2)  */
   /*                                                                     */
-  /* Pick which world map is your default and remember it: once set,     */
-  /* navigating to the other one is redirected to your choice, with the  */
-  /* shard/position suffix preserved. Preference lives in                */
-  /* localStorage["sm.defaultMap"]; a floating button cycles             */
-  /* auto -> classic -> alpha. "auto" enforces nothing.                  */
+  /* Screeps has two separate world-map apps. The preference (set from   */
+  /* the gear panel's Map row, 5d) is remembered in                      */
+  /* localStorage["sm.defaultMap"]; once set (not "auto") every route to */
+  /* the other map is steered to your choice. Two entry points are       */
+  /* covered: the hamburger menu's World item and the room view's globe  */
+  /* button -- both are hashbang <a> links, so a capture-phase click      */
+  /* interceptor rewrites them BEFORE the wrong app loads (avoiding the   */
+  /* "classic flashes, flips to alpha on touch" bug). A hashchange        */
+  /* listener is the fallback for direct-URL / programmatic navigation.  */
+  /* classic and alpha use different suffix formats (alpha: ?pos=x,y),    */
+  /* so conversion keeps only the shard (+ pos into alpha) to never       */
+  /* produce a route the target app can't parse.                         */
   /* ------------------------------------------------------------------ */
 
   var MAP_PREF_KEY = "sm.defaultMap";
@@ -1241,9 +1296,21 @@
     var m = (hash || "").match(/^#!\/map(2)?($|[\/?].*)$/);
     return m ? { isMap2: m[1] === "2", rest: m[2] || "" } : null;
   }
-  function preferredHash(r) {
-    var want2 = getMapPref() === "map2";
-    return "#!/map" + (want2 ? "2" : "") + r.rest;
+  // Build a valid hash for the preferred map from an arbitrary map suffix.
+  // Keeps the shard; carries a pos only into alpha (its ?pos= scheme). This
+  // avoids emitting e.g. #!/map2/shard/W1N1 (a room-name path alpha can't
+  // read) when swapping from the classic map's format.
+  function buildMapTarget(want2, rest) {
+    var shard = "";
+    var sm = (rest || "").match(/^\/([^/?#]+)/);
+    if (sm) shard = sm[1];
+    var pos = "";
+    var pm = (rest || "").match(/[?&]pos=([^&#]+)/);
+    if (pm) pos = pm[1];
+    var t = "#!/map" + (want2 ? "2" : "");
+    if (shard) t += "/" + shard;
+    if (want2 && pos) t += "?pos=" + pos;
+    return t;
   }
   function enforceMapPref() {
     var pref = getMapPref();
@@ -1251,18 +1318,17 @@
     var r = parseMapHash(location.hash);
     if (!r) return; // not on a world map right now
     if (r.isMap2 === (pref === "map2")) return; // already the preferred map
-    // Fallback path (direct URL entry, programmatic nav): swap the token.
-    location.replace(preferredHash(r));
+    // Fallback path (direct URL entry, programmatic nav).
+    location.replace(buildMapTarget(pref === "map2", r.rest));
   }
   window.addEventListener("hashchange", enforceMapPref);
   enforceMapPref(); // apply on initial load too
 
   // Primary path: rewrite the navigation BEFORE the wrong map ever loads.
-  // The World button (and other map links) navigate to #!/map (classic) or
-  // #!/map2 (alpha); classic and alpha are separate apps, so redirecting
-  // after the fact leaves the wrong view on screen until the next digest
-  // (the "classic flashes, then flips to alpha on touch" bug). Intercepting
-  // the click and steering it straight to the preferred map avoids that.
+  // Covers both the hamburger World item and the room globe button (both
+  // hashbang <a>). Capture phase runs before the link/router handler, so
+  // preventing it and setting the preferred hash lands straight on the right
+  // app with no classic flash.
   document.addEventListener(
     "click",
     function (e) {
@@ -1277,41 +1343,13 @@
       if (r.isMap2 === (pref === "map2")) return; // already preferred
       e.preventDefault();
       e.stopPropagation();
-      location.hash = preferredHash(r); // go straight to the preferred map
+      location.hash = buildMapTarget(pref === "map2", r.rest);
     },
     true,
   );
 
-  function buildMapToggle() {
-    if (!CONFIG.mapDefaultToggle) return;
-    if (!document.body || document.getElementById("sm-map-toggle")) return;
-    var btn = document.createElement("button");
-    btn.id = "sm-map-toggle";
-    btn.style.cssText =
-      "position:fixed;left:" +
-      CONFIG.mapToggleLeft +
-      "px;bottom:" +
-      CONFIG.mapToggleBottom +
-      "px;z-index:99990;height:34px;padding:0 12px;" +
-      "font:14px/1 sans-serif;color:#eee;background:#3a3a3a;" +
-      "border:1px solid #666;border-radius:17px;opacity:0.85;";
-    function relabel() {
-      var p = getMapPref();
-      btn.textContent =
-        "🗺 " + (p === "map2" ? "alpha" : p === "map" ? "classic" : "auto");
-    }
-    btn.addEventListener("click", function () {
-      var p = getMapPref();
-      // Cycle auto -> classic -> alpha -> auto.
-      var next = p === null ? "map" : p === "map" ? "map2" : null;
-      setMapPref(next);
-      relabel();
-      enforceMapPref();
-    });
-    relabel();
-    document.body.appendChild(btn);
-  }
-  buildMapToggle();
+  // Build the unified gear panel (5d) now that the map-pref helpers exist.
+  buildSettings();
 
   /* ------------------------------------------------------------------ */
   /* 6. Diagnostics: window.__smDump() or triple-tap the navbar logo     */
