@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.8.0
+// @version      0.8.1
 // @description  Mobile UX fixes for screeps.com: alpha-map (map2) finger pan & pinch zoom, touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @author       sy-harabi
 // @license      MIT
@@ -36,7 +36,7 @@
 
   // Keep in sync with the @version header above; the dump prints this so the
   // on-screen header never lies about which build is loaded.
-  var SM_VERSION = "0.8.0";
+  var SM_VERSION = "0.8.1";
 
   var CONFIG = {
     // Apply the CSS only on coarse-pointer (touch) devices.
@@ -1241,18 +1241,46 @@
     var m = (hash || "").match(/^#!\/map(2)?($|[\/?].*)$/);
     return m ? { isMap2: m[1] === "2", rest: m[2] || "" } : null;
   }
+  function preferredHash(r) {
+    var want2 = getMapPref() === "map2";
+    return "#!/map" + (want2 ? "2" : "") + r.rest;
+  }
   function enforceMapPref() {
     var pref = getMapPref();
     if (!pref) return; // "auto": leave the client's navigation alone
     var r = parseMapHash(location.hash);
     if (!r) return; // not on a world map right now
-    var want2 = pref === "map2";
-    if (r.isMap2 === want2) return; // already the preferred map
-    // Swap only the map/map2 token; keep the shard/pos suffix verbatim.
-    location.replace("#!/map" + (want2 ? "2" : "") + r.rest);
+    if (r.isMap2 === (pref === "map2")) return; // already the preferred map
+    // Fallback path (direct URL entry, programmatic nav): swap the token.
+    location.replace(preferredHash(r));
   }
   window.addEventListener("hashchange", enforceMapPref);
   enforceMapPref(); // apply on initial load too
+
+  // Primary path: rewrite the navigation BEFORE the wrong map ever loads.
+  // The World button (and other map links) navigate to #!/map (classic) or
+  // #!/map2 (alpha); classic and alpha are separate apps, so redirecting
+  // after the fact leaves the wrong view on screen until the next digest
+  // (the "classic flashes, then flips to alpha on touch" bug). Intercepting
+  // the click and steering it straight to the preferred map avoids that.
+  document.addEventListener(
+    "click",
+    function (e) {
+      var pref = getMapPref();
+      if (!pref) return;
+      var a = e.target.closest && e.target.closest("a[href]");
+      if (!a) return;
+      var href = a.getAttribute("href") || "";
+      var hash = href.indexOf("#") >= 0 ? href.slice(href.indexOf("#")) : "";
+      var r = parseMapHash(hash);
+      if (!r) return; // not a world-map link
+      if (r.isMap2 === (pref === "map2")) return; // already preferred
+      e.preventDefault();
+      e.stopPropagation();
+      location.hash = preferredHash(r); // go straight to the preferred map
+    },
+    true,
+  );
 
   function buildMapToggle() {
     if (!CONFIG.mapDefaultToggle) return;
