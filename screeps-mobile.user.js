@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.8.5
+// @version      0.8.6
 // @description  Mobile UX fixes for screeps.com: alpha-map (map2) finger pan & pinch zoom, touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @author       sy-harabi
 // @license      MIT
@@ -36,7 +36,7 @@
 
   // Keep in sync with the @version header above; the dump prints this so the
   // on-screen header never lies about which build is loaded.
-  var SM_VERSION = "0.8.5";
+  var SM_VERSION = "0.8.6";
 
   var CONFIG = {
     // Apply the CSS only on coarse-pointer (touch) devices.
@@ -1653,6 +1653,186 @@
     return L.join("\n");
   }
 
+  /* ------------------------------------------------------------------ */
+  /* room-edge navigation probe (0.8.6 diagnostic)                       */
+  /*                                                                     */
+  /* PC: hovering near a room game-field edge reveals a "go to neighbor  */
+  /* room" affordance; clicking it navigates. Touch fires no hover, so a */
+  /* tap does nothing. Before building the touch bridge we must confirm  */
+  /* the exact client mechanism ON A REAL DEVICE (screeps.com is blocked */
+  /* from the build env). Two probes, run from the diagnostic overlay:   */
+  /*   Edge probe  -- non-destructive: for each of the 4 field edges,    */
+  /*     dump the stacked elements BEFORE and AFTER a synthetic          */
+  /*     mouseover+mousemove, so a hover-revealed arrow/overlay shows up  */
+  /*     as a diff; also list Room-scope nav-ish keys/methods.           */
+  /*   Test ->nav -- drives the full PC gesture (mouseover+mousemove ->  */
+  /*     mousedown/up/click) at the right edge and reports whether        */
+  /*     location.hash changed to a neighbor room (= approach A works).   */
+  /* ------------------------------------------------------------------ */
+
+  function smElDesc(el) {
+    if (!el || el.nodeType !== 1) return "(none)";
+    var cls =
+      typeof el.className === "string" && el.className.trim()
+        ? "." + el.className.trim().split(/\s+/).slice(0, 4).join(".")
+        : "";
+    return el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + cls;
+  }
+  function smStackAt(x, y) {
+    return document
+      .elementsFromPoint(x, y)
+      .slice(0, 6)
+      .map(smElDesc);
+  }
+  function smFireMouseAt(x, y, type) {
+    var tgt = document.elementFromPoint(x, y);
+    if (!tgt) return null;
+    tgt.dispatchEvent(
+      new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        button: 0,
+        clientX: x,
+        clientY: y,
+      }),
+    );
+    return tgt;
+  }
+
+  // Non-destructive: hover each edge, diff the stacked elements. Async (waits
+  // two frames after each hover so an Angular-rendered arrow can appear).
+  function roomEdgeProbe(done) {
+    var L = ["=== room-edge probe " + SM_VERSION + " ==="];
+    L.push("hash: " + location.hash);
+    var field = document.querySelector("section.room .game-field-container");
+    var cursor = document.querySelector("section.room .cursor-layer");
+    if (!field) {
+      L.push("game-field-container: (none) -- open a room first");
+      done(L.join("\n"));
+      return;
+    }
+    var r = field.getBoundingClientRect();
+    L.push(
+      "field: " +
+        smElDesc(field) +
+        " rect x=" +
+        Math.round(r.x) +
+        " y=" +
+        Math.round(r.y) +
+        " w=" +
+        Math.round(r.width) +
+        " h=" +
+        Math.round(r.height),
+    );
+    L.push("cursor-layer: " + smElDesc(cursor));
+    L.push(
+      "field children: " +
+        (Array.prototype.slice.call(field.children).map(smElDesc).join(", ") ||
+          "(none)"),
+    );
+
+    // Room-scope keys that could be the neighbor-room navigation hook.
+    var scope = getRoomScope();
+    if (scope && scope.Room) {
+      var keys = [];
+      for (var k in scope.Room) {
+        if (/go|exit|nav|hover|arrow|edge|adjac|neighbo|goto/i.test(k)) {
+          var isFn = false;
+          try {
+            isFn = typeof scope.Room[k] === "function";
+          } catch (e) {}
+          keys.push(k + (isFn ? "()" : ""));
+        }
+      }
+      L.push("Room keys(nav-ish): " + (keys.join(", ") || "(none matched)"));
+    } else {
+      L.push("Room scope: none");
+    }
+
+    var inset = 5;
+    var cx = r.left + r.width / 2,
+      cy = r.top + r.height / 2;
+    var edges = [
+      ["L", r.left + inset, cy],
+      ["R", r.right - inset, cy],
+      ["T", cx, r.top + inset],
+      ["B", cx, r.bottom - inset],
+    ];
+    var i = 0;
+    (function step() {
+      if (i >= edges.length) {
+        done(L.join("\n"));
+        return;
+      }
+      var ed = edges[i],
+        name = ed[0],
+        x = ed[1],
+        y = ed[2];
+      var before = smStackAt(x, y);
+      smFireMouseAt(x, y, "mouseover");
+      smFireMouseAt(x, y, "mousemove");
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          L.push(
+            "[" + name + "] @" + Math.round(x) + "," + Math.round(y),
+          );
+          L.push("   before: " + before.join(" | "));
+          L.push("   hover : " + smStackAt(x, y).join(" | "));
+          i++;
+          step();
+        });
+      });
+    })();
+  }
+
+  // Destructive test: full hover+click at one edge; reports hash change.
+  function testEdgeNav(dir, log) {
+    var field = document.querySelector("section.room .game-field-container");
+    if (!field) {
+      log("navTest: no room field -- open a room first");
+      return;
+    }
+    var r = field.getBoundingClientRect();
+    var pts = {
+      L: [r.left + 5, r.top + r.height / 2],
+      R: [r.right - 5, r.top + r.height / 2],
+      T: [r.left + r.width / 2, r.top + 5],
+      B: [r.left + r.width / 2, r.bottom - 5],
+    };
+    var p = pts[dir] || pts.R;
+    var before = location.hash;
+    smFireMouseAt(p[0], p[1], "mouseover");
+    smFireMouseAt(p[0], p[1], "mousemove");
+    requestAnimationFrame(function () {
+      smFireMouseAt(p[0], p[1], "mousedown");
+      smFireMouseAt(p[0], p[1], "mouseup");
+      smFireMouseAt(p[0], p[1], "click");
+      setTimeout(function () {
+        log(
+          "navTest " +
+            dir +
+            ": before=" +
+            before +
+            " after=" +
+            location.hash +
+            (before !== location.hash ? "  -> NAVIGATED (approach A works)" : "  -> no change"),
+        );
+      }, 350);
+    });
+  }
+
+  window.__smEdgeProbe = function () {
+    roomEdgeProbe(function (t) {
+      console.log(t);
+    });
+  };
+  window.__smTestEdgeNav = function (dir) {
+    testEdgeNav(dir || "R", function (t) {
+      console.log(t);
+    });
+  };
+
   window.__smDump = function () {
     var out = dump();
     console.log(out);
@@ -1695,16 +1875,24 @@
       "white-space:pre;resize:none;";
     ta.readOnly = true;
     ta.value = dump();
+    function appendLog(text) {
+      ta.value += "\n" + text;
+      ta.scrollTop = ta.scrollHeight;
+    }
     var row = document.createElement("div");
-    row.style.cssText = "display:flex;gap:8px;";
+    row.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;";
     var btnCopy = document.createElement("button");
     btnCopy.textContent = "Copy";
+    var btnEdge = document.createElement("button");
+    btnEdge.textContent = "Edge probe";
+    var btnNav = document.createElement("button");
+    btnNav.textContent = "Test →nav";
     var btnClose = document.createElement("button");
     btnClose.textContent = "Close";
-    [btnCopy, btnClose].forEach(function (b) {
+    [btnCopy, btnEdge, btnNav, btnClose].forEach(function (b) {
       b.style.cssText =
-        "flex:1;padding:12px;font-size:16px;background:#444;color:#eee;" +
-        "border:1px solid #666;border-radius:4px;";
+        "flex:1 1 auto;min-width:80px;padding:12px;font-size:16px;" +
+        "background:#444;color:#eee;border:1px solid #666;border-radius:4px;";
     });
     btnCopy.addEventListener("click", function () {
       ta.select();
@@ -1712,10 +1900,20 @@
       else document.execCommand("copy");
       btnCopy.textContent = "Copied";
     });
+    btnEdge.addEventListener("click", function () {
+      appendLog("\n--- running edge probe... ---");
+      roomEdgeProbe(appendLog);
+    });
+    btnNav.addEventListener("click", function () {
+      appendLog("\n--- test →nav (right edge): watch the top-left room name ---");
+      testEdgeNav("R", appendLog);
+    });
     btnClose.addEventListener("click", function () {
       wrap.remove();
     });
     row.appendChild(btnCopy);
+    row.appendChild(btnEdge);
+    row.appendChild(btnNav);
     row.appendChild(btnClose);
     wrap.appendChild(ta);
     wrap.appendChild(row);
