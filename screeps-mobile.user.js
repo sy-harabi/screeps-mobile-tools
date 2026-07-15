@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.8.6
+// @version      0.8.7
 // @description  Mobile UX fixes for screeps.com: alpha-map (map2) finger pan & pinch zoom, touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @author       sy-harabi
 // @license      MIT
@@ -36,7 +36,7 @@
 
   // Keep in sync with the @version header above; the dump prints this so the
   // on-screen header never lies about which build is loaded.
-  var SM_VERSION = "0.8.6";
+  var SM_VERSION = "0.8.7";
 
   var CONFIG = {
     // Apply the CSS only on coarse-pointer (touch) devices.
@@ -1654,20 +1654,26 @@
   }
 
   /* ------------------------------------------------------------------ */
-  /* room-edge navigation probe (0.8.6 diagnostic)                       */
+  /* room-edge navigation probe (0.8.7 diagnostic)                       */
   /*                                                                     */
-  /* PC: hovering near a room game-field edge reveals a "go to neighbor  */
-  /* room" affordance; clicking it navigates. Touch fires no hover, so a */
-  /* tap does nothing. Before building the touch bridge we must confirm  */
-  /* the exact client mechanism ON A REAL DEVICE (screeps.com is blocked */
-  /* from the build env). Two probes, run from the diagnostic overlay:   */
-  /*   Edge probe  -- non-destructive: for each of the 4 field edges,    */
-  /*     dump the stacked elements BEFORE and AFTER a synthetic          */
-  /*     mouseover+mousemove, so a hover-revealed arrow/overlay shows up  */
-  /*     as a diff; also list Room-scope nav-ish keys/methods.           */
-  /*   Test ->nav -- drives the full PC gesture (mouseover+mousemove ->  */
-  /*     mousedown/up/click) at the right edge and reports whether        */
-  /*     location.hash changed to a neighbor room (= approach A works).   */
+  /* Confirmed on-device (0.8.6): the room game field navigates to a     */
+  /* neighbor room via DOM `.exit` overlay elements (div.exit.exit-top / */
+  /* .exit-bottom / .exit-left / .exit-right, each holding an <i> arrow),*/
+  /* rendered only on a side that actually HAS an exit. The Room scope    */
+  /* exposes helpers `Room.hasExit` and `Room.getNeighborRoom()`. A PC   */
+  /* click hits the `.exit` div -> navigates; a touch tap does not, so    */
+  /* we must route the tap into that element (or navigate directly).     */
+  /*                                                                     */
+  /* This probe confirms the exact bridge before we build it:            */
+  /*   Edge probe -- dump every `.exit` element (rect, pointer-events,   */
+  /*     handler attrs, arrow), the field children, and the corner       */
+  /*     element stacks, plus the Room nav helpers.                      */
+  /*   Click exit -- dispatch mousedown/up/click ON the first `.exit`    */
+  /*     div and report whether location.hash changed (does routing      */
+  /*     through the client's own handler navigate?).                    */
+  /*   Hash->E   -- compute the east neighbor room name ourselves and    */
+  /*     set location.hash (confirms the direct-navigation fallback and  */
+  /*     the room-name arithmetic).                                      */
   /* ------------------------------------------------------------------ */
 
   function smElDesc(el) {
@@ -1679,34 +1685,37 @@
     return el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + cls;
   }
   function smStackAt(x, y) {
-    return document
-      .elementsFromPoint(x, y)
-      .slice(0, 6)
-      .map(smElDesc);
-  }
-  function smFireMouseAt(x, y, type) {
-    var tgt = document.elementFromPoint(x, y);
-    if (!tgt) return null;
-    tgt.dispatchEvent(
-      new MouseEvent(type, {
-        bubbles: true,
-        cancelable: true,
-        view: window,
-        button: 0,
-        clientX: x,
-        clientY: y,
-      }),
-    );
-    return tgt;
+    return document.elementsFromPoint(x, y).slice(0, 6).map(smElDesc);
   }
 
-  // Non-destructive: hover each edge, diff the stacked elements. Async (waits
-  // two frames after each hover so an Angular-rendered arrow can appear).
+  // Neighbor room name in a compass direction. Signed mapping (screeps):
+  // W_x -> -x-1, E_x -> x ; N_y -> -y-1, S_y -> y. East:+x West:-x North:-y
+  // South:+y. Handles the W0<->E0 / N0<->S0 seam automatically.
+  function neighborRoom(name, dir) {
+    var m = /^([WE])(\d+)([NS])(\d+)$/i.exec(name || "");
+    if (!m) return null;
+    var x = parseInt(m[2], 10);
+    if (m[1].toUpperCase() === "W") x = -x - 1;
+    var y = parseInt(m[4], 10);
+    if (m[3].toUpperCase() === "N") y = -y - 1;
+    if (dir === "E") x++;
+    else if (dir === "W") x--;
+    else if (dir === "N") y--;
+    else if (dir === "S") y++;
+    return (
+      (x < 0 ? "W" + (-x - 1) : "E" + x) + (y < 0 ? "N" + (-y - 1) : "S" + y)
+    );
+  }
+  function roomHashParts() {
+    var m = /#!\/room\/([^/?#]+)\/([WE]\d+[NS]\d+)/i.exec(location.hash || "");
+    return m ? { shard: m[1], room: m[2] } : null;
+  }
+
+  // Non-destructive: dump the .exit overlays + field + Room nav helpers.
   function roomEdgeProbe(done) {
     var L = ["=== room-edge probe " + SM_VERSION + " ==="];
     L.push("hash: " + location.hash);
     var field = document.querySelector("section.room .game-field-container");
-    var cursor = document.querySelector("section.room .cursor-layer");
     if (!field) {
       L.push("game-field-container: (none) -- open a room first");
       done(L.join("\n"));
@@ -1714,123 +1723,115 @@
     }
     var r = field.getBoundingClientRect();
     L.push(
-      "field: " +
-        smElDesc(field) +
-        " rect x=" +
-        Math.round(r.x) +
-        " y=" +
-        Math.round(r.y) +
-        " w=" +
-        Math.round(r.width) +
-        " h=" +
-        Math.round(r.height),
+      "field rect x=" + Math.round(r.x) + " y=" + Math.round(r.y) +
+        " w=" + Math.round(r.width) + " h=" + Math.round(r.height),
     );
-    L.push("cursor-layer: " + smElDesc(cursor));
     L.push(
       "field children: " +
         (Array.prototype.slice.call(field.children).map(smElDesc).join(", ") ||
           "(none)"),
     );
+    var poh = document.querySelector("section.room .pan-overhover");
+    if (poh) {
+      var pr = poh.getBoundingClientRect();
+      L.push(
+        "pan-overhover: pe=" + getComputedStyle(poh).pointerEvents +
+          " rect w=" + Math.round(pr.width) + " h=" + Math.round(pr.height),
+      );
+    }
 
-    // Room-scope keys that could be the neighbor-room navigation hook.
+    // Room nav helpers.
     var scope = getRoomScope();
     if (scope && scope.Room) {
-      var keys = [];
+      var navish = [];
       for (var k in scope.Room) {
-        if (/go|exit|nav|hover|arrow|edge|adjac|neighbo|goto/i.test(k)) {
+        if (/exit|neighbo|goto|nav|room|hasexit/i.test(k)) {
           var isFn = false;
-          try {
-            isFn = typeof scope.Room[k] === "function";
-          } catch (e) {}
-          keys.push(k + (isFn ? "()" : ""));
+          try { isFn = typeof scope.Room[k] === "function"; } catch (e) {}
+          navish.push(k + (isFn ? "()" : ""));
         }
       }
-      L.push("Room keys(nav-ish): " + (keys.join(", ") || "(none matched)"));
+      L.push("Room nav helpers: " + (navish.join(", ") || "(none)"));
     } else {
       L.push("Room scope: none");
     }
 
-    var inset = 5;
-    var cx = r.left + r.width / 2,
-      cy = r.top + r.height / 2;
-    var edges = [
-      ["L", r.left + inset, cy],
-      ["R", r.right - inset, cy],
-      ["T", cx, r.top + inset],
-      ["B", cx, r.bottom - inset],
-    ];
-    var i = 0;
-    (function step() {
-      if (i >= edges.length) {
-        done(L.join("\n"));
-        return;
+    // Every .exit overlay: which sides exist, are they clickable, handler?
+    var exits = document.querySelectorAll("section.room .exit");
+    L.push("--- .exit elements: " + exits.length + " ---");
+    Array.prototype.forEach.call(exits, function (ex, idx) {
+      var er = ex.getBoundingClientRect();
+      var cs = getComputedStyle(ex);
+      var handlers = [];
+      for (var a = 0; a < ex.attributes.length; a++) {
+        var at = ex.attributes[a];
+        if (/click|^ng-|^on/i.test(at.name)) handlers.push(at.name + '="' + at.value + '"');
       }
-      var ed = edges[i],
-        name = ed[0],
-        x = ed[1],
-        y = ed[2];
-      var before = smStackAt(x, y);
-      smFireMouseAt(x, y, "mouseover");
-      smFireMouseAt(x, y, "mousemove");
-      requestAnimationFrame(function () {
-        requestAnimationFrame(function () {
-          L.push(
-            "[" + name + "] @" + Math.round(x) + "," + Math.round(y),
-          );
-          L.push("   before: " + before.join(" | "));
-          L.push("   hover : " + smStackAt(x, y).join(" | "));
-          i++;
-          step();
-        });
-      });
-    })();
+      L.push(
+        "[" + idx + "] " + smElDesc(ex) +
+          " rect x=" + Math.round(er.x) + " y=" + Math.round(er.y) +
+          " w=" + Math.round(er.width) + " h=" + Math.round(er.height) +
+          " pe=" + cs.pointerEvents + " vis=" + cs.visibility +
+          " disp=" + cs.display + " op=" + cs.opacity,
+      );
+      L.push("     handlers: " + (handlers.join(" ") || "(none on div)"));
+      L.push("     inner: " + (ex.innerHTML || "").replace(/\s+/g, " ").trim().slice(0, 90));
+    });
+
+    // Corner/edge element stacks (see what sits on top of each edge).
+    var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    [["L", r.left + 5, cy], ["R", r.right - 5, cy],
+     ["T", cx, r.top + 5], ["B", cx, r.bottom - 5]].forEach(function (e) {
+      L.push("[" + e[0] + "] @" + Math.round(e[1]) + "," + Math.round(e[2]) +
+        ": " + smStackAt(e[1], e[2]).join(" | "));
+    });
+    done(L.join("\n"));
   }
 
-  // Destructive test: full hover+click at one edge; reports hash change.
-  function testEdgeNav(dir, log) {
-    var field = document.querySelector("section.room .game-field-container");
-    if (!field) {
-      log("navTest: no room field -- open a room first");
+  // Destructive: dispatch a real click onto the first .exit div and see if
+  // the client's own handler navigates.
+  function clickExitTest(log) {
+    var exits = document.querySelectorAll("section.room .exit");
+    if (!exits.length) {
+      log("clickExit: no .exit elements in this room (try a room with open borders)");
       return;
     }
-    var r = field.getBoundingClientRect();
-    var pts = {
-      L: [r.left + 5, r.top + r.height / 2],
-      R: [r.right - 5, r.top + r.height / 2],
-      T: [r.left + r.width / 2, r.top + 5],
-      B: [r.left + r.width / 2, r.bottom - 5],
-    };
-    var p = pts[dir] || pts.R;
+    var ex = exits[0];
     var before = location.hash;
-    smFireMouseAt(p[0], p[1], "mouseover");
-    smFireMouseAt(p[0], p[1], "mousemove");
-    requestAnimationFrame(function () {
-      smFireMouseAt(p[0], p[1], "mousedown");
-      smFireMouseAt(p[0], p[1], "mouseup");
-      smFireMouseAt(p[0], p[1], "click");
-      setTimeout(function () {
-        log(
-          "navTest " +
-            dir +
-            ": before=" +
-            before +
-            " after=" +
-            location.hash +
-            (before !== location.hash ? "  -> NAVIGATED (approach A works)" : "  -> no change"),
-        );
-      }, 350);
+    ["mousedown", "mouseup", "click"].forEach(function (type) {
+      ex.dispatchEvent(
+        new MouseEvent(type, { bubbles: true, cancelable: true, view: window, button: 0 }),
+      );
     });
+    setTimeout(function () {
+      log(
+        "clickExit[" + smElDesc(ex) + "]: before=" + before + " after=" +
+          location.hash +
+          (before !== location.hash ? "  -> NAVIGATED (exit-div click works)" : "  -> no change"),
+      );
+    }, 350);
+  }
+
+  // Destructive: compute the east neighbor ourselves and set the hash.
+  function hashNavTest(dir, log) {
+    var p = roomHashParts();
+    if (!p) {
+      log("hashNav: not on a #!/room/<shard>/<room> route");
+      return;
+    }
+    var nb = neighborRoom(p.room, dir);
+    log("hashNav: " + p.room + " -" + dir + "-> " + nb + " (setting hash; watch the room)");
+    location.hash = "#!/room/" + p.shard + "/" + nb;
   }
 
   window.__smEdgeProbe = function () {
-    roomEdgeProbe(function (t) {
-      console.log(t);
-    });
+    roomEdgeProbe(function (t) { console.log(t); });
   };
-  window.__smTestEdgeNav = function (dir) {
-    testEdgeNav(dir || "R", function (t) {
-      console.log(t);
-    });
+  window.__smClickExit = function () {
+    clickExitTest(function (t) { console.log(t); });
+  };
+  window.__smHashNav = function (dir) {
+    hashNavTest(dir || "E", function (t) { console.log(t); });
   };
 
   window.__smDump = function () {
@@ -1885,13 +1886,15 @@
     btnCopy.textContent = "Copy";
     var btnEdge = document.createElement("button");
     btnEdge.textContent = "Edge probe";
-    var btnNav = document.createElement("button");
-    btnNav.textContent = "Test →nav";
+    var btnExit = document.createElement("button");
+    btnExit.textContent = "Click exit";
+    var btnHash = document.createElement("button");
+    btnHash.textContent = "Hash→E";
     var btnClose = document.createElement("button");
     btnClose.textContent = "Close";
-    [btnCopy, btnEdge, btnNav, btnClose].forEach(function (b) {
+    [btnCopy, btnEdge, btnExit, btnHash, btnClose].forEach(function (b) {
       b.style.cssText =
-        "flex:1 1 auto;min-width:80px;padding:12px;font-size:16px;" +
+        "flex:1 1 auto;min-width:78px;padding:12px;font-size:16px;" +
         "background:#444;color:#eee;border:1px solid #666;border-radius:4px;";
     });
     btnCopy.addEventListener("click", function () {
@@ -1904,16 +1907,21 @@
       appendLog("\n--- running edge probe... ---");
       roomEdgeProbe(appendLog);
     });
-    btnNav.addEventListener("click", function () {
-      appendLog("\n--- test →nav (right edge): watch the top-left room name ---");
-      testEdgeNav("R", appendLog);
+    btnExit.addEventListener("click", function () {
+      appendLog("\n--- click first .exit div: watch the room name ---");
+      clickExitTest(appendLog);
+    });
+    btnHash.addEventListener("click", function () {
+      appendLog("\n--- hash-nav to east neighbor ---");
+      hashNavTest("E", appendLog);
     });
     btnClose.addEventListener("click", function () {
       wrap.remove();
     });
     row.appendChild(btnCopy);
     row.appendChild(btnEdge);
-    row.appendChild(btnNav);
+    row.appendChild(btnExit);
+    row.appendChild(btnHash);
     row.appendChild(btnClose);
     wrap.appendChild(ta);
     wrap.appendChild(row);
