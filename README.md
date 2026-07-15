@@ -70,7 +70,11 @@ Edit the `CONFIG` block at the top of the script:
   choice, and it persists in `localStorage["sm.defaultMap"]`. `auto` enforces
   nothing (the client's own behavior). Conversion keeps the shard (and carries
   a position into the alpha map) so it never builds a route the target map
-  can't parse.
+  can't parse. The fallback also has a ping-pong guard (v0.8.6): if the client
+  keeps reverting a forced switch (e.g. during login it navigates
+  programmatically and the old app won't hand off to the alpha route), the
+  script stops re-forcing after a few tries instead of flickering between
+  `#!/map` and `#!/map2` forever.
 - `uiScale` — extra zoom for console/Memory panes and the aside panel.
   Default `1` (off). Only raise this if you want those panes larger than the
   rest of the UI; `viewportWidth` already enlarges everything uniformly.

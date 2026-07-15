@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.8.5
+// @version      0.8.6
 // @description  Mobile UX fixes for screeps.com: alpha-map (map2) finger pan & pinch zoom, touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
 // @author       sy-harabi
 // @license      MIT
@@ -36,7 +36,7 @@
 
   // Keep in sync with the @version header above; the dump prints this so the
   // on-screen header never lies about which build is loaded.
-  var SM_VERSION = "0.8.5";
+  var SM_VERSION = "0.8.6";
 
   var CONFIG = {
     // Apply the CSS only on coarse-pointer (touch) devices.
@@ -1312,12 +1312,50 @@
     if (want2 && pos) t += "?pos=" + pos;
     return t;
   }
+  // Circuit-breaker state for enforceMapPref. Without it, a client that reverts
+  // our forced hash (the old AngularJS app "refuses to hand off to the unknown
+  // /map2 route" -- see the globe note below) sends us into an infinite
+  // ping-pong: it reverts, our hashchange handler re-forces, it reverts again.
+  // On login the client navigates programmatically (no click), so the clean
+  // click-interceptor path never runs and only this fallback fires, which is
+  // when the flicker between #!/map and #!/map2 was observed.
+  var MAP_ENFORCE_MAX = 3; // forced redirects allowed within the window...
+  var MAP_ENFORCE_WINDOW_MS = 4000; // ...before we conclude the client is
+  //                                    reverting us and stop fighting it.
+  var mapEnforce = { times: [], tripped: false, giveUp: "" };
+
   function enforceMapPref() {
     var pref = getMapPref();
     if (!pref) return; // "auto": leave the client's navigation alone
-    var r = parseMapHash(location.hash);
+    var hash = location.hash || "";
+
+    // Any navigation to a hash other than the one we gave up on re-arms the
+    // breaker: the user (or client) has genuinely moved, so it's worth trying
+    // again rather than staying latched forever.
+    if (mapEnforce.tripped && hash !== mapEnforce.giveUp) {
+      mapEnforce.tripped = false;
+      mapEnforce.times = [];
+    }
+
+    var r = parseMapHash(hash);
     if (!r) return; // not on a world map right now
     if (r.isMap2 === (pref === "map2")) return; // already the preferred map
+    if (mapEnforce.tripped) return; // we already gave up fighting the client
+
+    // Ping-pong guard: if we have already forced the map several times within
+    // the window, the client is reverting us. Latch and stop, or we flicker
+    // between #!/map and #!/map2 forever (the login-navigation bug).
+    var now = Date.now();
+    mapEnforce.times = mapEnforce.times.filter(function (t) {
+      return now - t < MAP_ENFORCE_WINDOW_MS;
+    });
+    if (mapEnforce.times.length >= MAP_ENFORCE_MAX) {
+      mapEnforce.tripped = true;
+      mapEnforce.giveUp = hash; // stay latched until we leave this hash
+      return;
+    }
+    mapEnforce.times.push(now);
+
     // Fallback path (direct URL entry, programmatic nav).
     location.replace(buildMapTarget(pref === "map2", r.rest));
   }
