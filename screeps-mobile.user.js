@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.9.0
-// @description  Mobile UX fixes for screeps.com: room-edge tap-to-navigate to neighbor rooms, alpha-map (map2) finger pan & pinch zoom, touch resize for the script/console/Memory panel, same-tile object picker bottom sheet, navbar de-overlap, larger UI.
+// @version      0.9.1
+// @description  Mobile UX fixes for screeps.com: room-edge navigation, map touch controls, visible navbar status, spaced room controls, touch resize, same-tile picker, larger UI.
 // @author       sy-harabi
 // @license      MIT
 // @match        https://screeps.com/*
@@ -26,9 +26,9 @@
  *    ("game.editor.height") via the client's own code.
  *  - Panel presets: the appResizePanel controller (on `.game-switch-container`)
  *    exposes setHeight()/toggle(); double-tapping the handle cycles presets.
- *  - Navbar: `header.navbar` is a 42px strip; `.page-content` starts at 42px.
- *    When the right-side resources/CPU indicators wrap, the navbar grows and
- *    collides with `section.room .left-controls`. We prevent the wrap.
+ *  - Navbar: the resources, CPU, and profile indicators remain visible on
+ *    touch devices so mobile users retain access to account status. The room
+ *    view's `.left-controls` are offset by one 42px navbar row to clear it.
  */
 
 (function () {
@@ -36,7 +36,7 @@
 
   // Keep in sync with the @version header above; the dump prints this so the
   // on-screen header never lies about which build is loaded.
-  var SM_VERSION = "0.9.0";
+  var SM_VERSION = "0.9.1";
 
   var CONFIG = {
     // Apply the CSS only on coarse-pointer (touch) devices.
@@ -46,21 +46,23 @@
     // height. Double-tapping the resize handle cycles through them.
     heightPresets: [0.35, 0.6, 0.85],
     doubleTapMs: 400,
-    // The site ships <meta name="viewport" content="width=1280">, which is
-    // why everything is tiny on phones. Smaller width = larger UI
-    // (1280/width). 570 renders the whole UI ~2.25x the site default
-    // (~1.5x larger than the previous 850). null = site default.
-    // Raise this if the layout breaks (values well below 980 are
-    // aggressive: 570 -> 720 -> 850 -> 980 progressively tames it).
+    // Derive the starting layout width from the device's CSS screen width.
+    // 1.4 maps a typical 400-412px phone to 560-577px, close to the proven
+    // 570px tuning. The result is clamped to 427..1280 (3.0x..1.0x UI).
+    autoViewport: true,
+    viewportRatio: 1.4,
+    // Fallback when screen.width is unavailable, and the fixed starting width
+    // when autoViewport is false. null with autoViewport=false leaves the
+    // site's viewport width alone unless a manual A-/A+ override is saved.
     viewportWidth: 570,
     // Extra zoom for the console/Memory panes and the room aside panel
     // (game field and script editor are left untouched). 1 = off.
-    // With viewportWidth already enlarging everything, keep this at 1 so
+    // With viewport sizing already enlarging everything, keep this at 1 so
     // every pane scales uniformly (otherwise those panes double-scale).
     uiScale: 1,
     // Lock the browser's page zoom (user-scalable=no) so the UI can never
     // be pinch-zoomed. The map stays zoomable via pinchZoomMap below and
-    // the client's own +/- controls. Requires viewportWidth to be set.
+    // the client's own +/- controls. Requires an applied viewport width.
     lockZoom: true,
     // Pinch-to-zoom the map (room game field / world map) with two fingers.
     // Because page zoom is locked, we translate the pinch into the client's
@@ -144,20 +146,27 @@
   };
 
   /* ------------------------------------------------------------------ */
-  /* 1. CSS: navbar de-overlap, touch-sized picker, resize grip visual   */
+  /* 1. CSS: navbar/control spacing, touch-sized picker, resize grip     */
   /* ------------------------------------------------------------------ */
 
   var mq = CONFIG.touchOnly ? "@media (pointer: coarse)" : "@media all";
   var css =
     mq +
     " {\n" +
-    /* Navbar: keep it a single 42px row so it cannot wrap and spill
-     * over the room view's top-left controls (World/overview/zoom). */
-    "header.navbar .navbar-resources { display: none !important; }\n" +
-    "header.navbar .navbar-sysbar { display: none !important; }\n" +
+    /* Keep the account name compact without hiding the navbar's resource
+     * and CPU indicators. */
     "header.navbar .navbar-profile .username {" +
     " display: inline-block; max-width: 8em; overflow: hidden;" +
     " text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }\n" +
+    /* The page content retains its original 42px top offset when the visible
+     * navbar status wraps. Move the entire World/overview/history group down
+     * by one navbar row while preserving the client's own top positioning. */
+    "section.room .left-controls { margin-top: 42px !important; }\n" +
+    /* `.room-controls` spans the full room width and centers the inline
+     * View/Flag/Construct group. Reserve the verified 210px aside width so
+     * that centering uses the visible room area at aggressive UI scales. */
+    "section.room .room-controls {" +
+    " box-sizing: border-box; padding-right: 210px; }\n" +
     /* Built-in same-tile object picker: touch-sized targets. */
     ".view-popup { min-width: 230px; z-index: 100 !important; }\n" +
     ".view-popup ul li {" +
@@ -204,10 +213,11 @@
   document.head.appendChild(style);
 
   /* Layout-viewport width controls the whole-UI size (1280/width = scale).
-   * A runtime override lives in localStorage so the floating A-/A+ control
-   * (below) persists across reloads AND across script auto-updates (which
-   * overwrite this file, wiping any CONFIG edit). Helpers are declarations
-   * so they hoist for this early call.
+   * Without a saved override, the default is derived from screen.width so it
+   * follows the device and orientation. A runtime override lives in
+   * localStorage so the floating A-/A+ control persists across reloads AND
+   * across script auto-updates. Helpers are declarations so they hoist for
+   * this early call.
    *
    * Lock page zoom with user-scalable=no ONLY. Do NOT set initial-/minimum-/
    * maximum-scale: pinning the scale to 1 fights the width-based
@@ -217,6 +227,34 @@
   function smClampWidth(w) {
     return Math.max(427, Math.min(1280, Math.round(w))); // scale 3.0x .. 1.0x
   }
+  // Pure helper: explicit inputs make the device-size policy easy to test.
+  function smAutoWidthForScreen(screenWidth, ratio, fallbackWidth) {
+    var sw = Number(screenWidth);
+    var r = Number(ratio);
+    var fallback = Number(fallbackWidth);
+    if (!isFinite(fallback) || fallback <= 0) fallback = 1280;
+    if (!isFinite(sw) || sw <= 0 || !isFinite(r) || r <= 0) {
+      return smClampWidth(fallback);
+    }
+    return smClampWidth(sw * r);
+  }
+  function smScreenWidth() {
+    try {
+      var w = Number(window.screen && window.screen.width);
+      return isFinite(w) && w > 0 ? w : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  function smDefaultWidth() {
+    var fallback = CONFIG.viewportWidth || 1280;
+    return CONFIG.autoViewport
+      ? smAutoWidthForScreen(smScreenWidth(), CONFIG.viewportRatio, fallback)
+      : smClampWidth(fallback);
+  }
+  function smChooseWidth(savedWidth, defaultWidth) {
+    return savedWidth != null ? savedWidth : defaultWidth;
+  }
   function smSavedWidth() {
     try {
       var v = parseInt(localStorage.getItem(SIZE_LS_KEY), 10);
@@ -225,7 +263,16 @@
     return null;
   }
   function smCurrentWidth() {
-    return smSavedWidth() || CONFIG.viewportWidth || 1280;
+    return smChooseWidth(smSavedWidth(), smDefaultWidth());
+  }
+  function smClearSavedWidth() {
+    try {
+      localStorage.removeItem(SIZE_LS_KEY);
+    } catch (e) {}
+  }
+  function smResetViewport() {
+    smClearSavedWidth();
+    smApplyViewport(smDefaultWidth(), false);
   }
   function smApplyViewport(width, persist) {
     var meta = document.querySelector('meta[name="viewport"]');
@@ -237,9 +284,39 @@
         localStorage.setItem(SIZE_LS_KEY, String(width));
       } catch (e) {}
     }
+    smRefreshSizeLabel();
+  }
+  function smRefreshSizeLabel() {
+    var label = document.getElementById("sm-size-label");
+    if (label) label.textContent = (1280 / smCurrentWidth()).toFixed(1) + "×";
   }
 
-  if (CONFIG.viewportWidth) smApplyViewport(smCurrentWidth(), false);
+  if (CONFIG.autoViewport || CONFIG.viewportWidth || smSavedWidth() != null) {
+    smApplyViewport(smCurrentWidth(), false);
+  }
+
+  // screen.width normally updates with orientation. Recompute only in auto
+  // mode; a saved A-/A+ choice is intentionally device/orientation-stable.
+  var smOrientationTimer = null;
+  function smRefreshAutoViewport() {
+    if (!CONFIG.autoViewport || smSavedWidth() != null) return;
+    smApplyViewport(smDefaultWidth(), false);
+  }
+  function smScheduleAutoViewport() {
+    if (smOrientationTimer != null) clearTimeout(smOrientationTimer);
+    smOrientationTimer = setTimeout(smRefreshAutoViewport, 200);
+  }
+  window.addEventListener("orientationchange", smScheduleAutoViewport);
+  if (
+    window.screen &&
+    window.screen.orientation &&
+    window.screen.orientation.addEventListener
+  ) {
+    window.screen.orientation.addEventListener(
+      "change",
+      smScheduleAutoViewport,
+    );
+  }
 
   /* ------------------------------------------------------------------ */
   /* 2. Touch -> mouse bridge for the editor panel resize handle         */
@@ -1227,12 +1304,13 @@
       var sizeRow = mkRow("Size");
       var minus = mkBtn("A−", true);
       var label = document.createElement("span");
+      label.id = "sm-size-label";
       label.style.cssText =
         "min-width:44px;text-align:center;color:#ddd;font:15px/1 sans-serif;";
       var plus = mkBtn("A＋", true);
       var reset = mkBtn("↺", true);
       var refresh = function () {
-        label.textContent = (1280 / smCurrentWidth()).toFixed(1) + "×";
+        smRefreshSizeLabel();
       };
       var step = function (deltaScale) {
         var s = 1280 / smCurrentWidth();
@@ -1247,7 +1325,7 @@
         step(0.1);
       });
       reset.addEventListener("click", function () {
-        smApplyViewport(smClampWidth(CONFIG.viewportWidth || 1280), true);
+        smResetViewport();
         refresh();
       });
       refresh();
@@ -1302,6 +1380,7 @@
       if (v) localStorage.setItem(MAP_PREF_KEY, v);
       else localStorage.removeItem(MAP_PREF_KEY);
     } catch (e) {}
+    resetMapEnforceGuard(v);
   }
 
   // Match a world-map hash. Returns { isMap2, rest } where rest is the
@@ -1327,14 +1406,127 @@
     if (want2 && pos) t += "?pos=" + pos;
     return t;
   }
+
+  // A fallback replace can be rejected by the currently mounted map app. On
+  // login that looks like source -> preferred target -> exact source again.
+  // Detect the first quick rejection and stop fighting the client at that
+  // source until navigation genuinely leaves it or the preference changes.
+  var MAP_HANDOFF_WINDOW_MS = 2500;
+  var mapEnforceState = {
+    pref: null,
+    pending: null,
+    blockedSource: null,
+  };
+  var mapEnforceLastReason = "idle";
+
+  function resetMapEnforceGuard(pref) {
+    mapEnforceState = {
+      pref: pref === "map" || pref === "map2" ? pref : null,
+      pending: null,
+      blockedSource: null,
+    };
+    mapEnforceLastReason = "preference-reset";
+  }
+
+  // Pure transition: no location/localStorage/clock access. `target` is the
+  // one replacement the caller should perform, or null when it should wait.
+  function mapEnforceTransition(state, pref, hash, now, windowMs) {
+    pref = pref === "map" || pref === "map2" ? pref : null;
+    hash = hash || "";
+    var pending = state && state.pending;
+    var next = {
+      pref: state && state.pref ? state.pref : null,
+      pending: pending
+        ? {
+            source: pending.source,
+            target: pending.target,
+            time: pending.time,
+            accepted: !!pending.accepted,
+          }
+        : null,
+      blockedSource: (state && state.blockedSource) || null,
+    };
+
+    if (next.pref !== pref) {
+      next.pref = pref;
+      next.pending = null;
+      next.blockedSource = null;
+    }
+    if (!pref) return { state: next, target: null, reason: "auto" };
+
+    if (next.blockedSource) {
+      if (hash === next.blockedSource) {
+        return { state: next, target: null, reason: "source-blocked" };
+      }
+      // Leaving the exact rejected source re-arms future handoffs.
+      next.blockedSource = null;
+      next.pending = null;
+    }
+
+    pending = next.pending;
+    if (pending) {
+      var age = now - pending.time;
+      if (age < 0 || age > windowMs) {
+        next.pending = null;
+      } else if (hash === pending.target) {
+        pending.accepted = true;
+        return { state: next, target: null, reason: "target-accepted" };
+      } else if (hash === pending.source) {
+        if (pending.accepted) {
+          next.pending = null;
+          next.blockedSource = hash;
+          return { state: next, target: null, reason: "source-reverted" };
+        }
+        // The replace is still in flight; never issue a duplicate.
+        return { state: next, target: null, reason: "handoff-pending" };
+      } else {
+        // The target app may normalize its route or append a position. Any
+        // route in the preferred map app proves arrival just as reliably as
+        // the exact generated target; retain the pending source so a quick
+        // client reversion can still be recognized.
+        var arrivedRoute = parseMapHash(hash);
+        if (arrivedRoute && arrivedRoute.isMap2 === (pref === "map2")) {
+          pending.accepted = true;
+          return {
+            state: next,
+            target: null,
+            reason: "target-normalized",
+          };
+        }
+        next.pending = null;
+      }
+    }
+
+    var route = parseMapHash(hash);
+    if (!route) return { state: next, target: null, reason: "unrelated" };
+    if (route.isMap2 === (pref === "map2")) {
+      return { state: next, target: null, reason: "preferred" };
+    }
+
+    var target = buildMapTarget(pref === "map2", route.rest);
+    next.pending = {
+      source: hash,
+      target: target,
+      time: now,
+      accepted: false,
+    };
+    return { state: next, target: target, reason: "replace" };
+  }
+
   function enforceMapPref() {
     var pref = getMapPref();
-    if (!pref) return; // "auto": leave the client's navigation alone
-    var r = parseMapHash(location.hash);
-    if (!r) return; // not on a world map right now
-    if (r.isMap2 === (pref === "map2")) return; // already the preferred map
-    // Fallback path (direct URL entry, programmatic nav).
-    location.replace(buildMapTarget(pref === "map2", r.rest));
+    var result = mapEnforceTransition(
+      mapEnforceState,
+      pref,
+      location.hash,
+      Date.now(),
+      MAP_HANDOFF_WINDOW_MS,
+    );
+    mapEnforceState = result.state;
+    mapEnforceLastReason = result.reason;
+    // Fallback path (direct URL entry, programmatic nav): at most one replace
+    // until the target is accepted or the handoff window expires.
+    if (result.target) location.replace(result.target);
   }
   window.addEventListener("hashchange", enforceMapPref);
   enforceMapPref(); // apply on initial load too
@@ -1594,6 +1786,26 @@
       return el ? el.tagName.toLowerCase() + cls : "(none)";
     }
     lines.push("hash: " + location.hash);
+    var mapPending = mapEnforceState.pending;
+    lines.push(
+      "map enforce: pref=" +
+        (mapEnforceState.pref || "auto") +
+        " last=" +
+        mapEnforceLastReason +
+        " pending=" +
+        (mapPending
+          ? mapPending.source +
+            " -> " +
+            mapPending.target +
+            " accepted=" +
+            (mapPending.accepted ? "yes" : "no") +
+            " age=" +
+            Math.max(0, Date.now() - mapPending.time) +
+            "ms"
+          : "none") +
+        " blocked=" +
+        (mapEnforceState.blockedSource || "none"),
+    );
     var sections = Array.prototype.slice.call(
       document.querySelectorAll("section"),
     );

@@ -7,16 +7,18 @@ Userscript that fixes the worst mobile UX problems of the screeps.com web client
 | Problem | Fix |
 | --- | --- |
 | Can't pick an object when several share a tile | v0.5.1 (`popupPicker`): when 2+ objects share a tapped tile the client shows a tiny `.view-popup` list that is hard to tap (and on some devices whose items don't select at all). The script hides it and shows a large bottom bar of buttons mirrored from that list; tapping a button forwards a synthetic click to the client's own `<li>`, so selection runs through the client's handler — no tile-coordinate math, so it works at any map zoom. (The older coordinate-based picker is kept behind `coordPicker`, off by default, since it mis-reads the tile when the map is zoomed.) |
-| Whole UI too small | The site forces a 1280px layout viewport; the script sets it to 570 (`viewportWidth`), rendering the whole UI ~2.25× larger. Smaller `viewportWidth` = larger UI; raise it if the layout breaks. `uiScale` (extra zoom for the console/Memory/aside panes) defaults to `1`, so every pane scales uniformly from the viewport width. |
-| No easy way to change the UI size | v0.7 (`sizeControl`): a floating **⚙** button (bottom-right) opens a settings panel whose **Size** row (**A− / current scale / A＋ / ↺**) resizes the whole UI live (1.0×–3.0×) and saves the choice to `localStorage`, so it **survives reloads and auto-updates** (editing `viewportWidth` in the file does not — auto-update overwrites the file). Since v0.8.2 the same **⚙** panel also holds the default-map setting (below). |
+| Whole UI too small | v0.9.1 (`autoViewport`): the site forces a 1280px layout viewport, so the script now derives a device-sized default as `screen.width × 1.4`, clamped to 427–1280px. A 400–412px phone gets a 560–577px layout (~2.2× UI), close to the proven 570px tuning; orientation changes recompute it automatically. `uiScale` remains `1`, so every pane scales uniformly. |
+| No easy way to change the UI size | v0.7 (`sizeControl`): a floating **⚙** button (bottom-right) opens a settings panel whose **Size** row (**A− / current scale / A＋ / ↺**) resizes the whole UI live (1.0×–3.0×) and saves the choice to `localStorage`, so it **survives reloads and auto-updates**. A saved choice always wins over automatic sizing; **↺** removes it and returns to the current device-sized automatic default. Since v0.8.2 the same **⚙** panel also holds the default-map setting (below). |
 | Tapping a room-view edge did nothing (couldn't cross to the neighbor room) | v0.9 (`roomEdgeNav`): on desktop the room game field shows a clickable arrow strip (`div.exit.exit-top`/`-bottom`/`-left`/`-right`) on each side that has an exit; clicking it goes to that neighbor room (the client binds `ng-click="Room.switchRoom(dir)"`). A finger tap never reached those strips (they are `pointer-events:auto` but inset from the letterboxed container edge, and the raw edge tap lands on the canvas), so mobile edges were dead. The script forwards a single-finger tap that lands on an exit strip as a click to that element, so navigation runs through the client's own handler — no tile-coordinate or room-name math (zoom/pan-safe via the strips' live rects), and only sides that actually have an exit are rendered, so it can never build an impossible route. `roomEdgeMargin` pads each strip for easier touch. |
-| Want the map button to always open a specific world map | v0.8 (`mapDefaultToggle`): the **⚙** panel's **Map** row picks **auto / classic (`#!/map`) / alpha (`#!/map2`)**. Once set (not `auto`), both entry points are steered to your choice by a capture-phase click interceptor, so the preferred app loads directly with no wrong-map flash: the hamburger menu's **World** item (a hashbang `<a>`) and the room view's **globe** button (a `<button ng-click="Room.goToMap()">`, which otherwise goes to classic and gets stranded there because the old client won't hand off to the alpha route). For the globe, the current room name is converted to the alpha map's `pos=x,y` so it opens centred on the same room. A hashchange listener is the fallback for direct-URL navigation. The choice persists in `localStorage["sm.defaultMap"]`; `auto` enforces nothing. |
+| Want the map button to always open a specific world map | v0.8 (`mapDefaultToggle`): the **⚙** panel's **Map** row picks **auto / classic (`#!/map`) / alpha (`#!/map2`)**. Once set (not `auto`), both entry points are steered to your choice by a capture-phase click interceptor, so the preferred app loads directly with no wrong-map flash: the hamburger menu's **World** item (a hashbang `<a>`) and the room view's **globe** button (a `<button ng-click="Room.goToMap()">`, which otherwise goes to classic and gets stranded there because the old client won't hand off to the alpha route). For the globe, the current room name is converted to the alpha map's `pos=x,y` so it opens centred on the same room. A hashchange listener is the fallback for direct-URL navigation. v0.9.1 detects the first quick source → preferred-target → exact-source rejection—even if the target app normalizes or extends its hash—and stops re-forcing that source, preventing login-time `#!/map` / `#!/map2` flicker; leaving the source or changing the preference re-arms it. The choice persists in `localStorage["sm.defaultMap"]`; `auto` enforces nothing. |
 | Accidentally pinch-zooming the whole UI | v0.4 locks the browser's page zoom (`lockZoom` → `user-scalable=no`), so the UI can never be pinch-zoomed and can't get "stuck" zoomed in. The earlier floating ⛶ zoom-reset button is gone — with page zoom locked there is nothing to reset. |
 | Pinching only zoomed the whole page, not the map | v0.5 (`pinchZoomMap`): a two-finger pinch over the room game field / world map is translated into the client's own zoom (synthetic wheel events at the pinch centroid), so **only the map zooms while the UI stays fixed**. The client's +/- zoom controls (enlarged for touch) still work too. |
 | Can't pan the world map by finger | v0.6 (`worldMapPan`): the client's world map pans on mouse drag but ignores touch, so a finger drag did nothing. The script bridges a single-finger touch to the mouse drag sequence (`mousedown`→`mousemove`→`mouseup`); a finger tap with no drag is forwarded as a click so tapping a room still navigates. Two-finger pinch still zooms. |
 | Can't pan/zoom the alpha map (`#!/map2`) by finger | v0.7.8 (`map2Pan` / `map2Zoom`): every synthetic-event attempt (touch, mouse, pointer — 0.6.2 through 0.6.4) failed, because injected events were misread as a *room click* and caused accidental navigation instead of a pan. map2 is an app2 Angular + PIXI component, so the script now calls its **own model API directly** — no synthetic events, so a room click can never be spoofed. A single-finger drag drives the map container's `setCenter` (the pixel↔room conversion is derived live from `getBound()`, so it stays correct at any zoom) and re-runs the room draw pipeline via `BaseComponent.onBound`; a two-finger pinch drives `setScale`. A sub-threshold tap is left to the client's native handler, so tapping a room still navigates. The live component instances are resolved through the legacy `ng.probe()` debug API. |
 | Can't resize the Script/Console/Memory panel by touch | The client's resize handle only listens to mouse events. The script bridges touch drags to synthetic mouse events, so dragging the top strip of the panel resizes it (height persists via the client's own localStorage key). Double-tap the handle to cycle 35% / 60% / 85% height presets. |
-| Top-left buttons (burger/logo vs World/overview) overlap | On narrow screens the navbar's right-side resource/CPU indicators wrap it to a second row, which collides with the room view's left controls. The script hides those indicators on touch devices so the navbar stays a single 42px row. |
+| Credits/CPU/profile status is hidden | v0.9.1 keeps the navbar's resource, CPU, and profile indicators visible on touch devices. |
+| World/room overview/history controls overlap the navbar | v0.9.1 moves the room view's left control group down by one 42px navbar row on touch devices. |
+| View/Flag/Construct controls are hidden by the right sidebar at high UI scale | v0.9.1 reserves the sidebar's 210px width when centering the room action bar on touch devices. |
 
 ## Install (Android + Firefox)
 
@@ -52,17 +54,19 @@ Edit the `CONFIG` block at the top of the script:
 - `touchOnly` — CSS applies only on touch devices (`pointer: coarse`). Set
   `false` to test on desktop.
 - `heightPresets` — panel height fractions cycled by double-tapping the handle.
-- `viewportWidth` — layout viewport width (site default 1280). Default `570`
-  (~2.25× larger UI, 1280/570). Smaller = larger UI; the layout is aggressive
-  well below ~980, so raise it (570 → 720 → 850 → 980) if anything breaks.
-  `null` restores the site default. This is only the **starting** size — the
-  ⚙ panel's Size row (see `sizeControl`) overrides it at runtime via
-  `localStorage`.
+- `autoViewport` / `viewportRatio` — automatically derive the starting layout
+  width from the device's CSS `screen.width` (default ratio `1.4`), clamped to
+  427–1280px. It recomputes after orientation changes only while no manual size
+  is saved. Set `autoViewport` to `false` to use `viewportWidth` directly.
+- `viewportWidth` — fallback when automatic sizing cannot read `screen.width`,
+  or the fixed starting width when `autoViewport` is disabled. Default `570`.
+  With both `autoViewport: false` and `viewportWidth: null`, the site default is
+  left alone unless a manual size is already saved.
 - `sizeControl` — when `true` (default), show the **Size** row (A− / A＋ / ↺)
   in the floating **⚙** settings panel (bottom-right), which resizes the whole
   UI live (1.0×–3.0×) and remembers the choice across reloads/auto-updates. The
   saved size lives in `localStorage["sm.viewportWidth"]`; tap **↺** (or clear
-  that key) to return to the `viewportWidth` default. `sizeControlRight` /
+  that key) to return to automatic device sizing. `sizeControlRight` /
   `sizeControlBottom` position the ⚙ button.
 - `mapDefaultToggle` — when `true` (default), show the **Map** row
   (auto / classic / alpha) in the **⚙** panel. Picking `classic` or `alpha`
@@ -71,7 +75,10 @@ Edit the `CONFIG` block at the top of the script:
   choice, and it persists in `localStorage["sm.defaultMap"]`. `auto` enforces
   nothing (the client's own behavior). Conversion keeps the shard (and carries
   a position into the alpha map) so it never builds a route the target map
-  can't parse.
+  can't parse. If the mounted client rejects a fallback handoff and immediately
+  returns from the preferred target to the exact source, the script blocks that
+  source until navigation leaves it or the map preference changes, rather than
+  repeatedly flickering between `#!/map` and `#!/map2`.
 - `roomEdgeNav` — when `true` (default), a single-finger tap on the room
   view's edge arrow strip (`.exit`) navigates to that neighbor room, by
   forwarding a click to the client's own exit element (which runs
@@ -85,7 +92,8 @@ Edit the `CONFIG` block at the top of the script:
   rest of the UI; `viewportWidth` already enlarges everything uniformly.
 - `lockZoom` — when `true` (default), the browser's page zoom is disabled
   (`user-scalable=no`) so the UI cannot be pinch-zoomed. The map still zooms
-  via `pinchZoomMap` and the client's +/- controls. Requires `viewportWidth`.
+  via `pinchZoomMap` and the client's +/- controls. Requires automatic, fixed,
+  or manually saved viewport sizing to be active.
 - `pinchZoomMap` — when `true` (default), a two-finger pinch over the map is
   bridged to the client's own zoom (synthetic wheel events), so only the map
   zooms, not the UI. Tuning: `pinchStepPx` (pinch travel per wheel tick,
@@ -123,8 +131,8 @@ same.
 - The resize handle strip doubles as the tab row on its left side; drag from
   the **⇕** grip chip on the right side of the panel's top edge (double-tap it
   to cycle the height presets).
-- Tuned on Android + Firefox. `viewportWidth` (default `570`, ~2.25×) is
-  aggressive; on other screen sizes adjust it in the `CONFIG` block.
+- Tuned on Android + Firefox. Automatic sizing keeps the previous 570px tuning
+  around 400px-wide phones; use the ⚙ Size row for a persistent manual override.
 
 ## License
 
