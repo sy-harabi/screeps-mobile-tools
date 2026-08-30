@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.9.2
+// @version      0.9.4
 // @description  Mobile UX fixes for screeps.com: room-edge navigation, map touch controls, visible navbar status, spaced room controls, touch resize, same-tile picker, larger UI.
 // @author       sy-harabi
 // @license      MIT
@@ -36,7 +36,7 @@
 
   // Keep in sync with the @version header above; the dump prints this so the
   // on-screen header never lies about which build is loaded.
-  var SM_VERSION = "0.9.2";
+  var SM_VERSION = "0.9.4";
 
   var CONFIG = {
     // Apply the CSS only on coarse-pointer (touch) devices.
@@ -157,16 +157,17 @@
     "header.navbar .navbar-profile .username {" +
     " display: inline-block; max-width: 8em; overflow: hidden;" +
     " text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }\n" +
-    /* The page content retains its original 42px top offset when the visible
-     * navbar status wraps. Move the entire World/overview/history group down
-     * by one navbar row while preserving the client's own top positioning. */
-    "section.room .left-controls { margin-top: 42px !important; }\n" +
+    /* The page content stays at y=42 while navbar items can wrap below it.
+     * JS measures their live bottom and stores the required clearance here. */
+    "section.room .left-controls," +
+    " section.room .right-top-controls {" +
+    " margin-top: var(--sm-navbar-clearance, 42px) !important; }\n" +
     /* `.room-controls` spans the full room width and centers the inline
      * View/Flag/Construct group. Lower it below the wrapped navbar status and
      * reserve the verified 210px aside width only while that panel is open. */
     "section.room .room-controls {" +
     " box-sizing: border-box; padding-right: 210px;" +
-    " margin-top: 42px; }\n" +
+    " margin-top: var(--sm-navbar-clearance, 42px); }\n" +
     "section.room:has(> aside.collapsed) > .room-controls {" +
     " padding-right: 0; }\n" +
     /* Built-in same-tile object picker: touch-sized targets. */
@@ -213,6 +214,81 @@
   style.id = "screeps-mobile-ux-css";
   style.textContent = css;
   document.head.appendChild(style);
+
+  /* Navbar children can wrap outside the header's fixed 42px box. Measure
+   * their visible bottoms relative to the room instead of assuming one row,
+   * then share the result with every top room-control group through CSS. */
+  var NAVBAR_CLEARANCE_VAR = "--sm-navbar-clearance";
+  var NAVBAR_STATUS_SELECTORS = [
+    ".navbar-profile",
+    ".navbar-resources",
+    ".navbar-sysbar",
+  ];
+  var smNavbarClearanceFrame = null;
+  var smNavbarResizeObserver = null;
+
+  // Pure helper retained separately so multi-row geometry is easy to test.
+  function smNavbarClearanceForBottoms(roomTop, bottoms) {
+    var top = Number(roomTop);
+    if (!isFinite(top)) top = 42;
+    var lowest = top;
+    (bottoms || []).forEach(function (bottom) {
+      var value = Number(bottom);
+      if (isFinite(value) && value > lowest) lowest = value;
+    });
+    return Math.max(0, Math.ceil(lowest - top));
+  }
+
+  function smUpdateNavbarClearance() {
+    smNavbarClearanceFrame = null;
+    var room = document.querySelector("section.room");
+    var header = document.querySelector("header.navbar");
+    if (!room || !header) return;
+
+    var bottoms = [];
+    var headerRect = header.getBoundingClientRect();
+    if (headerRect.width && headerRect.height) bottoms.push(headerRect.bottom);
+    NAVBAR_STATUS_SELECTORS.forEach(function (selector) {
+      var el = header.querySelector(selector);
+      if (!el) return;
+      var r = el.getBoundingClientRect();
+      if (r.width && r.height) bottoms.push(r.bottom);
+    });
+    var roomTop = room.getBoundingClientRect().top;
+    room.style.setProperty(
+      NAVBAR_CLEARANCE_VAR,
+      smNavbarClearanceForBottoms(roomTop, bottoms) + "px",
+    );
+  }
+
+  function smScheduleNavbarClearance() {
+    if (smNavbarClearanceFrame != null) {
+      cancelAnimationFrame(smNavbarClearanceFrame);
+    }
+    smNavbarClearanceFrame = requestAnimationFrame(smUpdateNavbarClearance);
+  }
+
+  function smObserveNavbarLayout() {
+    if (smNavbarResizeObserver) smNavbarResizeObserver.disconnect();
+    if (typeof ResizeObserver === "function") {
+      smNavbarResizeObserver = new ResizeObserver(smScheduleNavbarClearance);
+      var header = document.querySelector("header.navbar");
+      if (header) {
+        smNavbarResizeObserver.observe(header);
+        NAVBAR_STATUS_SELECTORS.forEach(function (selector) {
+          var el = header.querySelector(selector);
+          if (el) smNavbarResizeObserver.observe(el);
+        });
+      }
+    }
+    smScheduleNavbarClearance();
+  }
+
+  window.addEventListener("resize", smScheduleNavbarClearance);
+  window.addEventListener("orientationchange", smScheduleNavbarClearance);
+  window.addEventListener("hashchange", smScheduleNavbarClearance);
+  smObserveNavbarLayout();
+  setTimeout(smObserveNavbarLayout, 500);
 
   /* Layout-viewport width controls the whole-UI size (1280/width = scale).
    * Without a saved override, the default is derived from screen.width so it
@@ -287,6 +363,7 @@
       } catch (e) {}
     }
     smRefreshSizeLabel();
+    smScheduleNavbarClearance();
   }
   function smRefreshSizeLabel() {
     var label = document.getElementById("sm-size-label");
@@ -1752,7 +1829,11 @@
       "header.navbar",
       ".navbar-brand",
       ".navbar-profile",
+      ".navbar-resources",
+      ".navbar-sysbar",
       "section.room .left-controls",
+      "section.room .room-controls",
+      "section.room .right-top-controls",
       ".editor-panel",
       ".editor-panel .resize-handle",
       ".view-popup",
