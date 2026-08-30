@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.9.1
+// @version      0.9.2
 // @description  Mobile UX fixes for screeps.com: room-edge navigation, map touch controls, visible navbar status, spaced room controls, touch resize, same-tile picker, larger UI.
 // @author       sy-harabi
 // @license      MIT
@@ -36,7 +36,7 @@
 
   // Keep in sync with the @version header above; the dump prints this so the
   // on-screen header never lies about which build is loaded.
-  var SM_VERSION = "0.9.1";
+  var SM_VERSION = "0.9.2";
 
   var CONFIG = {
     // Apply the CSS only on coarse-pointer (touch) devices.
@@ -139,10 +139,9 @@
     // this can never build an impossible route).
     roomEdgeNav: true,
     // Touch forgiveness (px) added around each ".exit" strip when testing
-    // whether a tap should navigate. The strips cover ~75% of each room-view
-    // edge and are inset from the (letterboxed) container edge; this padding
-    // makes the arrows easier to hit without reaching the room's interior.
-    roomEdgeMargin: 22,
+    // whether a tap should navigate. Keep this narrow so the adjacent edge
+    // tiles remain easy to select instead of triggering room navigation.
+    roomEdgeMargin: 4,
   };
 
   /* ------------------------------------------------------------------ */
@@ -163,10 +162,13 @@
      * by one navbar row while preserving the client's own top positioning. */
     "section.room .left-controls { margin-top: 42px !important; }\n" +
     /* `.room-controls` spans the full room width and centers the inline
-     * View/Flag/Construct group. Reserve the verified 210px aside width so
-     * that centering uses the visible room area at aggressive UI scales. */
+     * View/Flag/Construct group. Lower it below the wrapped navbar status and
+     * reserve the verified 210px aside width only while that panel is open. */
     "section.room .room-controls {" +
-    " box-sizing: border-box; padding-right: 210px; }\n" +
+    " box-sizing: border-box; padding-right: 210px;" +
+    " margin-top: 42px; }\n" +
+    "section.room:has(> aside.collapsed) > .room-controls {" +
+    " padding-right: 0; }\n" +
     /* Built-in same-tile object picker: touch-sized targets. */
     ".view-popup { min-width: 230px; z-index: 100 !important; }\n" +
     ".view-popup ul li {" +
