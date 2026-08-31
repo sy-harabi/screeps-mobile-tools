@@ -6,137 +6,144 @@ Userscript that fixes the worst mobile UX problems of the screeps.com web client
 
 | Problem | Fix |
 | --- | --- |
-| Can't pick an object when several share a tile | v0.5.1 (`popupPicker`): when 2+ objects share a tapped tile the client shows a tiny `.view-popup` list that is hard to tap (and on some devices whose items don't select at all). The script hides it and shows a large bottom bar of buttons mirrored from that list; tapping a button forwards a synthetic click to the client's own `<li>`, so selection runs through the client's handler — no tile-coordinate math, so it works at any map zoom. (The older coordinate-based picker is kept behind `coordPicker`, off by default, since it mis-reads the tile when the map is zoomed.) |
-| Whole UI too small | v0.9.1 (`autoViewport`): the site forces a 1280px layout viewport, so the script now derives a device-sized default as `screen.width × 1.4`, clamped to 427–1280px. A 400–412px phone gets a 560–577px layout (~2.2× UI), close to the proven 570px tuning; orientation changes recompute it automatically. `uiScale` remains `1`, so every pane scales uniformly. |
-| No easy way to change the UI size | v0.7 (`sizeControl`): a floating **⚙** button (bottom-right) opens a settings panel whose **Size** row (**A− / current scale / A＋ / ↺**) resizes the whole UI live (1.0×–3.0×) and saves the choice to `localStorage`, so it **survives reloads and auto-updates**. A saved choice always wins over automatic sizing; **↺** removes it and returns to the current device-sized automatic default. Since v0.8.2 the same **⚙** panel also holds the default-map setting (below). |
-| Tapping a room-view edge did nothing (couldn't cross to the neighbor room) | v0.9 (`roomEdgeNav`): on desktop the room game field shows a clickable arrow strip (`div.exit.exit-top`/`-bottom`/`-left`/`-right`) on each side that has an exit; clicking it goes to that neighbor room (the client binds `ng-click="Room.switchRoom(dir)"`). A finger tap never reached those strips (they are `pointer-events:auto` but inset from the letterboxed container edge, and the raw edge tap lands on the canvas), so mobile edges were dead. The script forwards a single-finger tap that lands on an exit strip as a click to that element, so navigation runs through the client's own handler — no tile-coordinate or room-name math (zoom/pan-safe via the strips' live rects), and only sides that actually have an exit are rendered, so it can never build an impossible route. v0.9.2 reduces the added hit padding to 4px so adjacent edge tiles remain selectable. |
-| Want the map button to always open a specific world map | v0.8 (`mapDefaultToggle`): the **⚙** panel's **Map** row picks **auto / classic (`#!/map`) / alpha (`#!/map2`)**. Once set (not `auto`), both entry points are steered to your choice by a capture-phase click interceptor, so the preferred app loads directly with no wrong-map flash: the hamburger menu's **World** item (a hashbang `<a>`) and the room view's **globe** button (a `<button ng-click="Room.goToMap()">`, which otherwise goes to classic and gets stranded there because the old client won't hand off to the alpha route). For the globe, the current room name is converted to the alpha map's `pos=x,y` so it opens centred on the same room. A hashchange listener is the fallback for direct-URL navigation. v0.9.1 detects the first quick source → preferred-target → exact-source rejection—even if the target app normalizes or extends its hash—and stops re-forcing that source, preventing login-time `#!/map` / `#!/map2` flicker; leaving the source or changing the preference re-arms it. The choice persists in `localStorage["sm.defaultMap"]`; `auto` enforces nothing. |
-| Accidentally pinch-zooming the whole UI | v0.4 locks the browser's page zoom (`lockZoom` → `user-scalable=no`), so the UI can never be pinch-zoomed and can't get "stuck" zoomed in. The earlier floating ⛶ zoom-reset button is gone — with page zoom locked there is nothing to reset. |
-| Pinching only zoomed the whole page, not the map | v0.5 (`pinchZoomMap`): a two-finger pinch over the room game field / world map is translated into the client's own zoom (synthetic wheel events at the pinch centroid), so **only the map zooms while the UI stays fixed**. The client's +/- zoom controls (enlarged for touch) still work too. |
-| Can't pan the world map by finger | v0.6 (`worldMapPan`): the client's world map pans on mouse drag but ignores touch, so a finger drag did nothing. The script bridges a single-finger touch to the mouse drag sequence (`mousedown`→`mousemove`→`mouseup`); a finger tap with no drag is forwarded as a click so tapping a room still navigates. Two-finger pinch still zooms. |
-| Can't pan/zoom the alpha map (`#!/map2`) by finger | v0.7.8 (`map2Pan` / `map2Zoom`): every synthetic-event attempt (touch, mouse, pointer — 0.6.2 through 0.6.4) failed, because injected events were misread as a *room click* and caused accidental navigation instead of a pan. map2 is an app2 Angular + PIXI component, so the script now calls its **own model API directly** — no synthetic events, so a room click can never be spoofed. A single-finger drag drives the map container's `setCenter` (the pixel↔room conversion is derived live from `getBound()`, so it stays correct at any zoom) and re-runs the room draw pipeline via `BaseComponent.onBound`; a two-finger pinch drives `setScale`. A sub-threshold tap is left to the client's native handler, so tapping a room still navigates. The live component instances are resolved through the legacy `ng.probe()` debug API. |
-| Can't resize the Script/Console/Memory panel by touch | The client's resize handle only listens to mouse events. The script bridges touch drags to synthetic mouse events, so dragging the top strip of the panel resizes it (height persists via the client's own localStorage key). Double-tap the handle to cycle 35% / 60% / 85% height presets. |
-| Credits/CPU/profile status is hidden | v0.9.1 keeps the navbar's resource, CPU, and profile indicators visible on touch devices. |
-| World/room overview/history controls overlap the navbar | v0.9.4 measures the live bottom of every visible navbar status group and moves the room view's left controls below it, including multi-row layouts at high scale. |
-| View/Flag/Construct controls overlap the navbar or right sidebar | v0.9.4 uses the same dynamic navbar clearance for the action bar. It reserves the sidebar's 210px width while the panel is open, then returns to true center when the sidebar is collapsed. |
-| Display Options overlaps the profile/status bar | v0.9.4 applies the measured navbar clearance to the room view's right-top control group too. |
+| Can't pick an object when several share a tile | `popupPicker` replaces the tiny same-tile popup with a large touch-friendly bottom bar and forwards selection to the client's own handler. |
+| Whole UI too small | `autoViewport` derives a device-sized layout width from `screen.width`, with manual A− / A＋ / ↺ controls in the floating ⚙ panel. |
+| Tapping a room-view edge does nothing | `roomEdgeNav` forwards a touch on a rendered room exit strip to the client's own `Room.switchRoom(dir)` handler. |
+| Pinch zooms the page instead of the map | `lockZoom` prevents accidental page zoom while `pinchZoomMap` translates a two-finger pinch into map zoom. |
+| Can't pan the classic world map by finger | `worldMapPan` bridges touch drag to the classic map's mouse-drag handling. |
+| Can't pan/zoom the alpha map (`#!/map2`) | `map2Pan` / `map2Zoom` drive the Screeps Angular/PIXI map component directly through its live model API. |
+| Can't resize Script/Console/Memory by touch | Touch drag is bridged to the existing resize handle; double-tap cycles 35% / 60% / 85% presets. |
+| Mobile navbar/control overlap | The script measures the live navbar and repositions room controls dynamically. |
+| Want one map as the default | The ⚙ panel can prefer auto / classic / alpha world map and persists the choice in `localStorage`. |
 
-## Install (Android + Firefox)
+## Install
 
-1. Install **Violentmonkey** (or Tampermonkey) from Firefox Add-ons.
-2. Open the extension dashboard → create a new script → paste the contents of
-   `screeps-mobile.user.js` → save.
-   (Or serve/host the file and open its URL; the `.user.js` suffix triggers the
-   install prompt.)
-3. Reload screeps.com.
+### Android + Firefox
 
-### Auto-update
+1. Install **Violentmonkey** or **Tampermonkey** in Firefox.
+2. Open the raw userscript URL:
 
-The script carries `@updateURL`/`@downloadURL` pointing at the raw file on
-`main`, so Violentmonkey/Tampermonkey check for new versions automatically and
-pull them once the `@version` is bumped and pushed.
+   ```text
+   https://raw.githubusercontent.com/sy-harabi/screeps-mobile-tools/main/screeps-mobile.user.js
+   ```
 
-To enable it the **first** time, the installed copy must already contain those
-headers — install once from the raw URL so the manager records them:
+3. Accept the userscript installation prompt.
+4. Reload `https://screeps.com/`.
 
+### iPhone / iPad + Safari
+
+Use the open-source **Userscripts** Safari extension.
+
+Requirements:
+
+- iOS/iPadOS **15.4+ recommended** for this script. Userscripts itself supports iOS 15.1+, but Screeps Mobile UX uses CSS `:has()`, which requires Safari 15.4+.
+- Safari extension access must be enabled for `screeps.com` (or all websites).
+
+Install:
+
+1. Install **Userscripts** from the App Store.
+2. Open the Userscripts app once and choose/confirm its scripts directory.
+3. Enable **Userscripts** in Safari extensions and grant website access.
+4. In Safari, open:
+
+   ```text
+   https://raw.githubusercontent.com/sy-harabi/screeps-mobile-tools/main/screeps-mobile.user.js
+   ```
+
+5. Open the Userscripts extension popup and accept the installation prompt.
+6. Reload Screeps.
+
+The `.user.js` suffix must be in the URL path; the raw GitHub URL above satisfies that requirement.
+
+## Auto-update
+
+The repository contains two update endpoints:
+
+```text
+screeps-mobile.meta.js   # metadata/version check
+screeps-mobile.user.js   # full script download
 ```
-https://raw.githubusercontent.com/sy-harabi/screeps-mobile-tools/main/screeps-mobile.user.js
+
+For userscript managers that support the standard update flow, metadata should use:
+
+```text
+@updateURL   https://raw.githubusercontent.com/sy-harabi/screeps-mobile-tools/main/screeps-mobile.meta.js
+@downloadURL https://raw.githubusercontent.com/sy-harabi/screeps-mobile-tools/main/screeps-mobile.user.js
 ```
 
-Opening that URL triggers the install prompt. After that, every future push
-that bumps `@version` is picked up automatically (managers check periodically;
-"Check for updates" in the dashboard forces it immediately). GitHub's raw CDN
-caches for a few minutes, so a just-pushed update may take a short while.
+When releasing a new version, keep the `@version` value in **both** files synchronized.
+
+Userscripts for Safari periodically checks installed scripts with `@version` + `@updateURL`. Its documentation notes that its update implementation is not fully complete, so manual reinstallation from the raw `.user.js` URL remains a fallback if an automatic update is not detected.
+
+## iPhone / Safari compatibility status
+
+The current script is written with standard browser APIs and has no dependency on Tampermonkey/Violentmonkey `GM_*` APIs (`@grant none`). Static review found no obvious blocker for modern Safari.
+
+Expected compatibility:
+
+| Feature | iPhone status |
+| --- | --- |
+| Viewport/UI sizing | Expected to work |
+| ⚙ settings | Expected to work |
+| Same-tile picker | Expected to work |
+| Room-edge navigation | Expected to work |
+| Touch panel resize | Expected to work |
+| Classic-map touch pan | Expected to work |
+| Classic/room-map pinch zoom | Expected to work; device verification recommended |
+| Alpha-map (`map2`) pan/zoom | Needs real-device verification |
+| Auto-update | Supported by metadata layout; Userscripts itself documents limitations in its update implementation |
+
+### Why `map2` needs extra verification
+
+The alpha world-map bridge resolves Screeps' Angular component instances through the legacy `window.ng.probe()` debug API. The script therefore needs to execute in a page context where Screeps' `window.ng` is visible. Userscripts supports `@inject-into` with `auto`, `content`, and `page`; the script currently relies on the default/automatic behavior rather than forcing an injection context.
+
+If everything works except alpha-map dragging or pinch zoom, open `#!/map2` and use the diagnostic dump described below. `ctx: NOT RESOLVED` indicates that `ng.probe` or the expected map component is unavailable.
+
+This repository has been tuned primarily on Android + Firefox. The iPhone notes above are based on source/API compatibility review; they are **not a claim of physical iPhone device testing**.
 
 ## Config
 
-Edit the `CONFIG` block at the top of the script:
+Edit the `CONFIG` block near the top of `screeps-mobile.user.js`.
 
-- `touchOnly` — CSS applies only on touch devices (`pointer: coarse`). Set
-  `false` to test on desktop.
-- `heightPresets` — panel height fractions cycled by double-tapping the handle.
-- `autoViewport` / `viewportRatio` — automatically derive the starting layout
-  width from the device's CSS `screen.width` (default ratio `1.4`), clamped to
-  427–1280px. It recomputes after orientation changes only while no manual size
-  is saved. Set `autoViewport` to `false` to use `viewportWidth` directly.
-- `viewportWidth` — fallback when automatic sizing cannot read `screen.width`,
-  or the fixed starting width when `autoViewport` is disabled. Default `570`.
-  With both `autoViewport: false` and `viewportWidth: null`, the site default is
-  left alone unless a manual size is already saved.
-- `sizeControl` — when `true` (default), show the **Size** row (A− / A＋ / ↺)
-  in the floating **⚙** settings panel (bottom-right), which resizes the whole
-  UI live (1.0×–3.0×) and remembers the choice across reloads/auto-updates. The
-  saved size lives in `localStorage["sm.viewportWidth"]`; tap **↺** (or clear
-  that key) to return to automatic device sizing. `sizeControlRight` /
-  `sizeControlBottom` position the ⚙ button.
-- `mapDefaultToggle` — when `true` (default), show the **Map** row
-  (auto / classic / alpha) in the **⚙** panel. Picking `classic` or `alpha`
-  makes that world map your default: navigation to the other one (the
-  hamburger **World** item and the room **globe** button) is steered to your
-  choice, and it persists in `localStorage["sm.defaultMap"]`. `auto` enforces
-  nothing (the client's own behavior). Conversion keeps the shard (and carries
-  a position into the alpha map) so it never builds a route the target map
-  can't parse. If the mounted client rejects a fallback handoff and immediately
-  returns from the preferred target to the exact source, the script blocks that
-  source until navigation leaves it or the map preference changes, rather than
-  repeatedly flickering between `#!/map` and `#!/map2`.
-- `roomEdgeNav` — when `true` (default), a single-finger tap on the room
-  view's edge arrow strip (`.exit`) navigates to that neighbor room, by
-  forwarding a click to the client's own exit element (which runs
-  `Room.switchRoom(dir)`). Only sides that actually have an exit are
-  rendered/clickable, so it can't build an impossible route, and it needs no
-  tile math so it is zoom/pan-safe. `roomEdgeMargin` (default `4`) is the
-  narrow touch padding (px) added around each strip; keeping it small prevents
-  room navigation from stealing taps intended for adjacent edge tiles, while
-  a tap anywhere else is left untouched, so object selection is unaffected.
-- `uiScale` — extra zoom for console/Memory panes and the aside panel.
-  Default `1` (off). Only raise this if you want those panes larger than the
-  rest of the UI; `viewportWidth` already enlarges everything uniformly.
-- `lockZoom` — when `true` (default), the browser's page zoom is disabled
-  (`user-scalable=no`) so the UI cannot be pinch-zoomed. The map still zooms
-  via `pinchZoomMap` and the client's +/- controls. Requires automatic, fixed,
-  or manually saved viewport sizing to be active.
-- `pinchZoomMap` — when `true` (default), a two-finger pinch over the map is
-  bridged to the client's own zoom (synthetic wheel events), so only the map
-  zooms, not the UI. Tuning: `pinchStepPx` (pinch travel per wheel tick,
-  smaller = more sensitive), `wheelDelta` (client zoom step per tick),
-  `invertPinch` (set `true` if pinch-out zooms out instead of in). This is the
-  bridge for the room game field and the **old** world map; the alpha map has
-  its own path (see `map2Zoom`).
-- `map2Pan` / `map2Zoom` — when `true` (default), enable single-finger pan and
-  two-finger pinch-zoom on the **alpha** world map (`#!/map2`). Unlike the old
-  map, these drive map2's own Angular/PIXI component API directly instead of
-  synthetic events (which never worked there). `map2InvertX` / `map2InvertY`
-  flip the pan direction per axis if a drag moves the map the wrong way on your
-  device/orientation; `invertPinch` also applies to map2 zoom.
-- `map2TouchAction` — when `true` (default, and forced on whenever `map2Pan`
-  or `map2Zoom` is on), sets `touch-action: none` on the map2 canvas so the
-  browser can't steal the drag as a scroll / pull-to-refresh before the pan
-  handler owns it. Tapping a room still navigates (touch-action doesn't affect
-  taps).
+- `touchOnly` — apply mobile CSS only on coarse-pointer devices. Set `false` for desktop testing.
+- `heightPresets` — editor-panel height fractions used by double-tap.
+- `autoViewport` / `viewportRatio` — derive the initial layout width from `screen.width` (default ratio `1.4`).
+- `viewportWidth` — fallback/fixed layout width; default `570`.
+- `sizeControl` — show the floating ⚙ size controls and persist the selected viewport width.
+- `mapDefaultToggle` — show auto / classic / alpha map preference in the ⚙ panel.
+- `roomEdgeNav` — enable touch navigation through room exit strips.
+- `roomEdgeMargin` — extra touch padding around exit strips; default `4` px.
+- `uiScale` — optional extra zoom for console/Memory/aside panes; default `1`.
+- `lockZoom` — disable browser page pinch zoom while leaving map zoom available.
+- `pinchZoomMap` — translate two-finger pinch on the room/classic map into the client's own zoom.
+- `pinchStepPx` / `wheelDelta` / `invertPinch` — tune classic-map pinch behavior.
+- `worldMapPan` — bridge touch drag to classic world-map mouse drag.
+- `worldMapPanThreshold` — movement threshold between tap and drag.
+- `map2Pan` / `map2Zoom` — touch pan and pinch zoom for the alpha map.
+- `map2InvertX` / `map2InvertY` — reverse alpha-map pan direction if required.
+- `map2TouchAction` — keep the browser from stealing gestures on the alpha-map canvas.
+- `popupPicker` — large touch picker for multiple objects on one tile.
+- `coordPicker` — legacy coordinate picker; off by default because it is not zoom-safe.
 
 ## Diagnostics
 
-If something is still broken, **triple-tap the burger/logo** (top-left) to open
-an on-screen diagnostic dump (viewport info, element rectangles, what elements
-are stacked in the top-left corner, Angular scope status). Tap **Copy** and
-paste it back for calibration. From a desktop console, `__smDump()` does the
-same.
+If something is broken, **triple-tap the burger/logo** at the top left to open the on-screen diagnostic dump. It includes viewport data, element rectangles, element stacking, and Angular/map2 status.
+
+Tap **Copy** and paste the result into an issue or debugging conversation.
+
+From a desktop console, the same dump is available through:
+
+```js
+__smDump()
+```
 
 ## Notes / limitations
 
-- Built against the live old client (`build.min.js`) as served 2026-07; a
-  client update can rename classes/directives. The diagnostic dump is the
-  recalibration tool.
-- The tile picker appears when the tapped tile holds **more than one** object
-  (client behavior: exactly one object is selected directly).
-- The resize handle strip doubles as the tab row on its left side; drag from
-  the **⇕** grip chip on the right side of the panel's top edge (double-tap it
-  to cycle the height presets).
-- Tuned on Android + Firefox. Automatic sizing keeps the previous 570px tuning
-  around 400px-wide phones; use the ⚙ Size row for a persistent manual override.
+- Built against the live Screeps old client (`build.min.js`) as served in 2026-07. Client updates can rename classes/directives or remove Angular debug APIs.
+- The same-tile picker appears only when a tile contains more than one selectable object; the Screeps client directly selects a single object.
+- The resize strip overlaps the tab row on its left side; use the **⇕** grip on the right side.
+- Automatic viewport sizing is tuned around typical phone widths. Use the ⚙ Size control for a persistent manual override.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Anyone may install, use, modify, and
-redistribute it.
+MIT — see [LICENSE](LICENSE). Anyone may install, use, modify, and redistribute it.
