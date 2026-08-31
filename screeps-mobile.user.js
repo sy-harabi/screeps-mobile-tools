@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.9.4
+// @version      0.9.5
 // @description  Mobile UX fixes for screeps.com: room-edge navigation, map touch controls, visible navbar status, spaced room controls, touch resize, same-tile picker, larger UI.
 // @author       sy-harabi
 // @license      MIT
@@ -11,7 +11,7 @@
 // @homepageURL  https://github.com/sy-harabi/screeps-mobile-tools
 // @supportURL   https://github.com/sy-harabi/screeps-mobile-tools/issues
 // @downloadURL  https://raw.githubusercontent.com/sy-harabi/screeps-mobile-tools/main/screeps-mobile.user.js
-// @updateURL    https://raw.githubusercontent.com/sy-harabi/screeps-mobile-tools/main/screeps-mobile.user.js
+// @updateURL    https://raw.githubusercontent.com/sy-harabi/screeps-mobile-tools/main/screeps-mobile.meta.js
 // ==/UserScript==
 
 /*
@@ -36,7 +36,7 @@
 
   // Keep in sync with the @version header above; the dump prints this so the
   // on-screen header never lies about which build is loaded.
-  var SM_VERSION = "0.9.4";
+  var SM_VERSION = "0.9.5";
 
   var CONFIG = {
     // Apply the CSS only on coarse-pointer (touch) devices.
@@ -87,6 +87,10 @@
     // coordinates. It breaks when the map is zoomed (wrong tile), so it is
     // off by default; popupPicker supersedes it.
     coordPicker: false,
+    // Maximum finger drift for a room gesture to count as a tap. Native room
+    // selection is held until touchend; moving farther or adding a second
+    // finger cancels it so pan/pinch never changes the selected object.
+    roomTapThreshold: 12,
     // The client's world map pans on mouse drag but ignores touch, so a
     // finger drag does nothing. Bridge single-finger touch to synthetic
     // mouse events (mousedown/move/up) so dragging pans it; a finger tap
@@ -170,6 +174,11 @@
     " margin-top: var(--sm-navbar-clearance, 42px); }\n" +
     "section.room:has(> aside.collapsed) > .room-controls {" +
     " padding-right: 0; }\n" +
+    /* While a room touch is still a potential tap, keep native/mirrored
+     * object pickers invisible. The gesture code decides on touchend whether
+     * to reveal them or discard them as a pan/pinch. */
+    "html.sm-room-touch-pending .view-popup," +
+    " html.sm-room-touch-pending #sm-tile-picker { visibility:hidden !important; }\n" +
     /* Built-in same-tile object picker: touch-sized targets. */
     ".view-popup { min-width: 230px; z-index: 100 !important; }\n" +
     ".view-popup ul li {" +
@@ -178,7 +187,7 @@
     /* Resize handle: visible grip so it is discoverable by touch.
      * (Kept to the right side: the left part of the strip is the tab row.) */
     ".editor-panel .resize-handle::after {" +
-    ' content: "\\21D5";' + // up-down double arrow: reads as a drag-to-resize control
+    ' content: "\\21D5";' +
     " position: absolute; top: 1px; right: 122px;" +
     " width: 40px; height: 20px; line-height: 20px; text-align: center;" +
     " font-size: 16px; color: rgba(255,255,255,0.62);" +
@@ -215,9 +224,6 @@
   style.textContent = css;
   document.head.appendChild(style);
 
-  /* Navbar children can wrap outside the header's fixed 42px box. Measure
-   * their visible bottoms relative to the room instead of assuming one row,
-   * then share the result with every top room-control group through CSS. */
   var NAVBAR_CLEARANCE_VAR = "--sm-navbar-clearance";
   var NAVBAR_STATUS_SELECTORS = [
     ".navbar-profile",
@@ -227,7 +233,6 @@
   var smNavbarClearanceFrame = null;
   var smNavbarResizeObserver = null;
 
-  // Pure helper retained separately so multi-row geometry is easy to test.
   function smNavbarClearanceForBottoms(roomTop, bottoms) {
     var top = Number(roomTop);
     if (!isFinite(top)) top = 42;
@@ -262,9 +267,7 @@
   }
 
   function smScheduleNavbarClearance() {
-    if (smNavbarClearanceFrame != null) {
-      cancelAnimationFrame(smNavbarClearanceFrame);
-    }
+    if (smNavbarClearanceFrame != null) cancelAnimationFrame(smNavbarClearanceFrame);
     smNavbarClearanceFrame = requestAnimationFrame(smUpdateNavbarClearance);
   }
 
@@ -290,22 +293,11 @@
   smObserveNavbarLayout();
   setTimeout(smObserveNavbarLayout, 500);
 
-  /* Layout-viewport width controls the whole-UI size (1280/width = scale).
-   * Without a saved override, the default is derived from screen.width so it
-   * follows the device and orientation. A runtime override lives in
-   * localStorage so the floating A-/A+ control persists across reloads AND
-   * across script auto-updates. Helpers are declarations so they hoist for
-   * this early call.
-   *
-   * Lock page zoom with user-scalable=no ONLY. Do NOT set initial-/minimum-/
-   * maximum-scale: pinning the scale to 1 fights the width-based
-   * magnification and renders the UI tiny on some Android browsers. */
   var SIZE_LS_KEY = "sm.viewportWidth";
 
   function smClampWidth(w) {
-    return Math.max(427, Math.min(1280, Math.round(w))); // scale 3.0x .. 1.0x
+    return Math.max(427, Math.min(1280, Math.round(w)));
   }
-  // Pure helper: explicit inputs make the device-size policy easy to test.
   function smAutoWidthForScreen(screenWidth, ratio, fallbackWidth) {
     var sw = Number(screenWidth);
     var r = Number(ratio);
@@ -374,8 +366,6 @@
     smApplyViewport(smCurrentWidth(), false);
   }
 
-  // screen.width normally updates with orientation. Recompute only in auto
-  // mode; a saved A-/A+ choice is intentionally device/orientation-stable.
   var smOrientationTimer = null;
   function smRefreshAutoViewport() {
     if (!CONFIG.autoViewport || smSavedWidth() != null) return;
@@ -391,15 +381,8 @@
     window.screen.orientation &&
     window.screen.orientation.addEventListener
   ) {
-    window.screen.orientation.addEventListener(
-      "change",
-      smScheduleAutoViewport,
-    );
+    window.screen.orientation.addEventListener("change", smScheduleAutoViewport);
   }
-
-  /* ------------------------------------------------------------------ */
-  /* 2. Touch -> mouse bridge for the editor panel resize handle         */
-  /* ------------------------------------------------------------------ */
 
   var drag = null;
   var lastTapTime = 0;
@@ -418,15 +401,11 @@
     );
   }
 
-
   document.addEventListener(
     "touchstart",
     function (e) {
-      var handle =
-        e.target.closest && e.target.closest(".editor-panel .resize-handle");
+      var handle = e.target.closest && e.target.closest(".editor-panel .resize-handle");
       if (!handle || e.touches.length !== 1) return;
-      // preventDefault suppresses the browser's compatibility mouse events;
-      // we synthesize the full sequence ourselves.
       e.preventDefault();
       drag = { moved: false };
       fireMouse("mousedown", handle, e.touches[0]);
@@ -438,7 +417,7 @@
     "touchmove",
     function (e) {
       if (!drag) return;
-      e.preventDefault(); // no page scroll while resizing
+      e.preventDefault();
       drag.moved = true;
       fireMouse("mousemove", document.documentElement, e.touches[0]);
     },
@@ -460,22 +439,14 @@
       }
     }
   }
-  document.addEventListener("touchend", endDrag, {
-    passive: false,
-    capture: true,
-  });
-  document.addEventListener("touchcancel", endDrag, {
-    passive: false,
-    capture: true,
-  });
+  document.addEventListener("touchend", endDrag, { passive: false, capture: true });
+  document.addEventListener("touchcancel", endDrag, { passive: false, capture: true });
 
   function panelCtrl() {
     if (!window.angular) return null;
     var containers = document.querySelectorAll(".game-switch-container");
     for (var i = 0; i < containers.length; i++) {
-      var ctrl = window.angular
-        .element(containers[i])
-        .controller("appResizePanel");
+      var ctrl = window.angular.element(containers[i]).controller("appResizePanel");
       if (ctrl) return { ctrl: ctrl, el: containers[i] };
     }
     return null;
@@ -488,23 +459,17 @@
     var h = Math.round(window.innerHeight * CONFIG.heightPresets[presetIdx]);
     var scope = window.angular.element(found.el).scope();
     var apply = function () {
-      found.ctrl.toggle(false); // ensure the panel is open
+      found.ctrl.toggle(false);
       found.ctrl.setHeight(h);
     };
     if (scope && scope.$applyAsync) scope.$applyAsync(apply);
     else apply();
   }
 
-  /* ------------------------------------------------------------------ */
-  /* 3. Keep the same-tile picker (.view-popup) inside the viewport      */
-  /* ------------------------------------------------------------------ */
-
   function clampIntoView(el) {
     requestAnimationFrame(function () {
       var r = el.getBoundingClientRect();
       if (!r.width) return;
-      // The popup lives inside the (possibly transform-scaled) room
-      // stage, so convert the on-screen correction back to local px.
       var scaleX = el.offsetWidth ? r.width / el.offsetWidth : 1;
       var scaleY = el.offsetHeight ? r.height / el.offsetHeight : 1;
       var vv = window.visualViewport;
@@ -515,12 +480,7 @@
             right: vv.offsetLeft + vv.width,
             bottom: vv.offsetTop + vv.height,
           }
-        : {
-            left: 0,
-            top: 0,
-            right: window.innerWidth,
-            bottom: window.innerHeight,
-          };
+        : { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
       var dx = 0,
         dy = 0;
       if (r.right > b.right) dx = b.right - r.right;
@@ -548,32 +508,67 @@
           if (CONFIG.popupPicker) mirrorPopupToSheet(pop);
         }
       }
-      // When the client removes its popup (selection made or tapped away),
-      // tear down the mirrored sheet so the two stay in sync.
       for (var k = 0; k < m.removedNodes.length; k++) {
         if (findPopup(m.removedNodes[k])) onPopupGone();
       }
     }
   }).observe(document.body, { childList: true, subtree: true });
 
-  /* ------------------------------------------------------------------ */
-  /* 4. Independent same-tile object picker (bottom sheet)               */
-  /*                                                                     */
-  /* Does not depend on the client's .view-popup. A tap on the room's    */
-  /* .cursor-layer is converted to tile coordinates from the layer's     */
-  /* bounding rect; the objects on that tile are read from the Angular   */
-  /* room scope (Room.objects/Room.flags, same exclusions the client's   */
-  /* own picker applies). Two or more objects -> bottom sheet with       */
-  /* touch-sized buttons; tapping one injects the selection.             */
-  /* ------------------------------------------------------------------ */
-
-  var pickerInfo = { lastTile: "-", lastStack: -1 }; // diagnostics
+  var pickerInfo = { lastTile: "-", lastStack: -1 };
   var roomTap = null;
+  var ROOM_TOUCH_PENDING_CLASS = "sm-room-touch-pending";
 
   function getRoomScope() {
     var el = document.querySelector("section.room");
     var s = el && window.angular && window.angular.element(el).scope();
     return s && s.Room ? s : null;
+  }
+
+  function sameSelectedObject(a, b) {
+    if (a === b) return true;
+    return !!(a && b && a._id && b._id && a._id === b._id);
+  }
+
+  function setRoomSelection(scope, obj) {
+    if (!scope || !scope.Room) return;
+    var selected = obj || null;
+    scope.Room.selectedObject = selected;
+    if (scope.$root && scope.$root.$broadcast) {
+      if (scope.$root.$$phase) {
+        scope.$root.$broadcast("roomObjectSelected", selected);
+      } else if (scope.$root.$evalAsync) {
+        scope.$root.$evalAsync(function () {
+          scope.$root.$broadcast("roomObjectSelected", selected);
+        });
+      }
+    }
+  }
+
+  function sampleNativeRoomSelection(tap) {
+    if (!tap || roomTap !== tap || tap.cancelled) return;
+    var scope = getRoomScope();
+    if (!scope) return;
+    var current = scope.Room.selectedObject || null;
+    if (sameSelectedObject(current, tap.previousSelected)) return;
+    tap.candidateSelected = current;
+    tap.hasCandidate = true;
+    // The client selects on touchstart. Put the old selection back before the
+    // browser paints; a genuine tap will commit the candidate on touchend.
+    setRoomSelection(scope, tap.previousSelected);
+  }
+
+  function cancelRoomSelection(tap, reason) {
+    if (!tap) return;
+    tap.moved = true;
+    tap.cancelled = true;
+    pickerInfo.lastRoomTap = reason || "cancel";
+    var scope = getRoomScope();
+    if (scope && !sameSelectedObject(scope.Room.selectedObject, tap.previousSelected)) {
+      setRoomSelection(scope, tap.previousSelected);
+    }
+    // A stacked-tile native popup may already have been created/mirrored.
+    // Keep the previous selection and discard that picker for a pan/pinch.
+    dismissPopup();
   }
 
   function objectsAt(scope, x, y) {
@@ -597,15 +592,36 @@
     "touchstart",
     function (e) {
       if (e.touches.length !== 1) {
-        roomTap = null; // pinch etc.
+        if (roomTap) cancelRoomSelection(roomTap, "multitouch");
         return;
       }
       if (!(e.target.closest && e.target.closest(".cursor-layer"))) return;
-      roomTap = {
-        x: e.touches[0].clientX,
-        y: e.touches[0].clientY,
+      var scope = getRoomScope();
+      if (!scope) return;
+      var action = scope.Room.selectedAction && scope.Room.selectedAction.action;
+      if (action && action !== "view") return;
+      var t = e.touches[0];
+      var tap = {
+        x: t.clientX,
+        y: t.clientY,
         moved: false,
+        cancelled: false,
+        previousSelected: scope.Room.selectedObject || null,
+        candidateSelected: null,
+        hasCandidate: false,
       };
+      roomTap = tap;
+      document.documentElement.classList.add(ROOM_TOUCH_PENDING_CLASS);
+
+      // Capture the client's synchronous/deferred touchstart selection before
+      // paint and immediately restore the previous selection while unresolved.
+      var sample = function () {
+        sampleNativeRoomSelection(tap);
+      };
+      if (typeof queueMicrotask === "function") queueMicrotask(sample);
+      else if (typeof Promise === "function") Promise.resolve().then(sample);
+      else setTimeout(sample, 0);
+      requestAnimationFrame(sample);
     },
     { passive: true, capture: true },
   );
@@ -613,12 +629,17 @@
   document.addEventListener(
     "touchmove",
     function (e) {
-      if (!roomTap || e.touches.length !== 1) return;
+      if (!roomTap) return;
+      if (e.touches.length !== 1) {
+        cancelRoomSelection(roomTap, "pinch");
+        return;
+      }
+      var t = e.touches[0];
       if (
-        Math.abs(e.touches[0].clientX - roomTap.x) > 12 ||
-        Math.abs(e.touches[0].clientY - roomTap.y) > 12
+        Math.abs(t.clientX - roomTap.x) > CONFIG.roomTapThreshold ||
+        Math.abs(t.clientY - roomTap.y) > CONFIG.roomTapThreshold
       ) {
-        roomTap.moved = true; // pan, not a tap
+        cancelRoomSelection(roomTap, "pan");
       }
     },
     { passive: true, capture: true },
@@ -627,28 +648,55 @@
   document.addEventListener(
     "touchend",
     function (e) {
-      if (!roomTap) return;
-      var wasTap = !roomTap.moved;
+      var tap = roomTap;
+      if (!tap) return;
+      // Catch any last native selection change before resolving the gesture.
+      if (!tap.cancelled) sampleNativeRoomSelection(tap);
       roomTap = null;
-      if (!CONFIG.coordPicker) return; // popupPicker supersedes this path
-      if (!wasTap || e.changedTouches.length !== 1) return;
-      var layer = e.target.closest && e.target.closest(".cursor-layer");
-      if (!layer) return;
+      document.documentElement.classList.remove(ROOM_TOUCH_PENDING_CLASS);
+
+      var wasTap = !tap.moved && !tap.cancelled && e.changedTouches.length === 1;
+      if (!wasTap) {
+        var scopeCancelled = getRoomScope();
+        if (
+          scopeCancelled &&
+          !sameSelectedObject(scopeCancelled.Room.selectedObject, tap.previousSelected)
+        ) {
+          setRoomSelection(scopeCancelled, tap.previousSelected);
+        }
+        dismissPopup();
+        return;
+      }
+
+      pickerInfo.lastRoomTap = "tap";
       var scope = getRoomScope();
-      if (!scope) return;
-      var action =
-        scope.Room.selectedAction && scope.Room.selectedAction.action;
-      if (action && action !== "view") return; // don't interfere with flag/construct placement
+      if (scope && tap.hasCandidate) setRoomSelection(scope, tap.candidateSelected);
+
+      if (!CONFIG.coordPicker) return;
+      var layer = e.target.closest && e.target.closest(".cursor-layer");
+      if (!layer || !scope) return;
+      var action = scope.Room.selectedAction && scope.Room.selectedAction.action;
+      if (action && action !== "view") return;
       var r = layer.getBoundingClientRect();
       if (!r.width || !r.height) return;
       var t = e.changedTouches[0];
       var tx = Math.floor(((t.clientX - r.left) / r.width) * 50);
       var ty = Math.floor(((t.clientY - r.top) / r.height) * 50);
       if (tx < 0 || tx > 49 || ty < 0 || ty > 49) return;
-      // Let the client's own click handling finish first.
       setTimeout(function () {
         maybeShowSheet(tx, ty);
       }, 150);
+    },
+    { passive: true, capture: true },
+  );
+
+  document.addEventListener(
+    "touchcancel",
+    function () {
+      var tap = roomTap;
+      roomTap = null;
+      document.documentElement.classList.remove(ROOM_TOUCH_PENDING_CLASS);
+      if (tap) cancelRoomSelection(tap, "touchcancel");
     },
     { passive: true, capture: true },
   );
@@ -687,11 +735,7 @@
 
   function renderSheet(scope, objs, x, y) {
     hideSheet();
-    // Dynamic font size based on the VISIBLE viewport width so the sheet
-    // has a constant physical size at any pinch-zoom level.
-    var vw = window.visualViewport
-      ? window.visualViewport.width
-      : window.innerWidth;
+    var vw = window.visualViewport ? window.visualViewport.width : window.innerWidth;
     var fs = Math.max(14, Math.round(vw / 34));
     var wrap = document.createElement("div");
     wrap.id = "sm-tile-picker";
@@ -700,9 +744,7 @@
       "display:flex;align-items:stretch;gap:8px;padding:10px;" +
       "background:rgba(22,22,22,0.96);border-top:1px solid #555;" +
       "overflow-x:auto;-webkit-overflow-scrolling:touch;" +
-      "font-size:" +
-      fs +
-      "px;";
+      "font-size:" + fs + "px;";
     var title = document.createElement("div");
     title.textContent = x + "," + y;
     title.style.cssText =
@@ -725,7 +767,7 @@
           scope.Room.selectedObject = o;
           if (scope.$root) scope.$root.$broadcast("roomObjectSelected", o);
         });
-        renderSheet(scope, objs, x, y); // refresh highlight
+        renderSheet(scope, objs, x, y);
       });
       wrap.appendChild(btn);
     });
@@ -741,25 +783,13 @@
     pinToVisualBottom(wrap);
   }
 
-  /* ------------------------------------------------------------------ */
-  /* 4b. Popup-driven picker (default): mirror the client's .view-popup  */
-  /*                                                                     */
-  /* The client already lists the tile's objects in .view-popup and      */
-  /* already knows which tile was tapped (no coordinate math, zoom-safe).*/
-  /* We hide that tiny list and show a large bottom sheet of buttons;    */
-  /* each button forwards a synthetic click to the matching client <li>, */
-  /* so selection runs through the client's OWN handler. A programmatic  */
-  /* click also bypasses the touch layer that was swallowing item taps.  */
-  /* ------------------------------------------------------------------ */
-
-  var activePopup = null; // the client .view-popup currently mirrored
+  var activePopup = null;
 
   function popupLis(pop) {
     return Array.prototype.slice.call(pop.querySelectorAll("ul li"));
   }
 
   function clickLi(li) {
-    // Cover click-based (Angular ng-click) and mousedown/up-based handlers.
     ["mousedown", "mouseup", "click"].forEach(function (type) {
       li.dispatchEvent(
         new MouseEvent(type, {
@@ -784,27 +814,23 @@
   }
 
   function mirrorPopupToSheet(pop) {
-    // The <li> items may render a frame after the popup node is inserted.
     var tries = 0;
     (function attempt() {
       var items = popupLis(pop);
       pickerInfo.lastStack = items.length;
       if (items.length >= 2) {
         activePopup = pop;
-        pop.style.visibility = "hidden"; // keep in DOM (handlers stay live)
+        pop.style.visibility = "hidden";
         renderSheetFromLis(items);
       } else if (items.length === 0 && tries++ < 3 && pop.parentNode) {
-        requestAnimationFrame(attempt); // wait for Angular to fill the list
+        requestAnimationFrame(attempt);
       }
-      // items === 1: client selects directly; nothing to mirror.
     })();
   }
 
   function renderSheetFromLis(items) {
     hideSheet();
-    var vw = window.visualViewport
-      ? window.visualViewport.width
-      : window.innerWidth;
+    var vw = window.visualViewport ? window.visualViewport.width : window.innerWidth;
     var fs = Math.max(14, Math.round(vw / 34));
     var wrap = document.createElement("div");
     wrap.id = "sm-tile-picker";
@@ -813,9 +839,7 @@
       "display:flex;align-items:stretch;gap:8px;padding:10px;" +
       "background:rgba(22,22,22,0.96);border-top:1px solid #555;" +
       "overflow-x:auto;-webkit-overflow-scrolling:touch;" +
-      "font-size:" +
-      fs +
-      "px;";
+      "font-size:" + fs + "px;";
     items.forEach(function (li) {
       var label = (li.textContent || "").replace(/\s+/g, " ").trim() || "object";
       var btn = document.createElement("button");
@@ -825,7 +849,7 @@
         "color:#eee;border-radius:6px;white-space:nowrap;" +
         "background:#3a3a3a;border:1px solid #666;";
       btn.addEventListener("click", function () {
-        clickLi(li); // let the client select via its own handler
+        clickLi(li);
         dismissPopup();
       });
       wrap.appendChild(btn);
@@ -842,29 +866,14 @@
     pinToVisualBottom(wrap);
   }
 
-  /* ------------------------------------------------------------------ */
-  /* 5. Viewport helpers                                                 */
-  /*                                                                     */
-  /* Browser page zoom is locked off (CONFIG.lockZoom -> viewport meta   */
-  /* user-scalable=no), so the UI can never be pinch-zoomed and the map  */
-  /* is zoomed only via the client's own +/- controls. The pinch-escape  */
-  /* button that earlier versions needed is therefore gone. We keep only */
-  /* zoomFactor (for diagnostics) and pinToVisualBottom (to keep the     */
-  /* tile-picker sheet on screen if the visual viewport ever shifts,     */
-  /* e.g. an on-screen keyboard).                                        */
-  /* ------------------------------------------------------------------ */
-
-  // 1 = fully zoomed out (page fits the screen), >1 = zoomed in.
-  // With zoom locked this reports ~1.0; retained for the dump.
   function zoomFactor() {
     var vv = window.visualViewport;
     return vv ? window.innerWidth / vv.width : 1;
   }
 
-  // Keep a fixed, bottom-pinned element aligned to the VISUAL viewport.
   function pinToVisualBottom(el) {
     var vv = window.visualViewport;
-    if (!vv) return; // default fixed bottom:0 styles are fine then
+    if (!vv) return;
     el.style.left = vv.offsetLeft + "px";
     el.style.right = "auto";
     el.style.width = vv.width + "px";
@@ -881,30 +890,17 @@
     window.visualViewport.addEventListener("resize", onVvChange);
   }
 
-  /* ------------------------------------------------------------------ */
-  /* 5b. Pinch-to-zoom the map (room game field / world map)             */
-  /*                                                                     */
-  /* Page zoom is locked (user-scalable=no), so a two-finger pinch over  */
-  /* the map is translated into the client's OWN zoom by dispatching     */
-  /* synthetic wheel events at the pinch centroid. Result: only the map  */
-  /* zooms; the surrounding UI stays fixed. The client zooms the room on */
-  /* wheel (deltaY<0 = zoom in on the standard client build); flip via   */
-  /* CONFIG.invertPinch if a build inverts the sign.                     */
-  /* ------------------------------------------------------------------ */
-
   var MAP_ZOOM_SEL =
     "section.room .game-field-container, section.world-map .map-container";
-  // (map2 / app-world-map-map is intentionally excluded -- see WORLD_MAP_SEL.)
-  var pinch = null; // { d, accum } while a two-finger pinch is active
-  pickerInfo.lastPinch = "-"; // diagnostics
+  var pinch = null;
+  pickerInfo.lastPinch = "-";
 
   function touchDist(a, b) {
     return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
   }
 
   function fireWheel(x, y, deltaY) {
-    var target =
-      document.elementFromPoint(x, y) || document.querySelector(MAP_ZOOM_SEL);
+    var target = document.elementFromPoint(x, y) || document.querySelector(MAP_ZOOM_SEL);
     if (!target) return;
     target.dispatchEvent(
       new WheelEvent("wheel", {
@@ -930,7 +926,6 @@
       }
       if (!(e.target.closest && e.target.closest(MAP_ZOOM_SEL))) return;
       pinch = { d: touchDist(e.touches[0], e.touches[1]), accum: 0 };
-      // Own the gesture: no client pan, no browser default.
       e.preventDefault();
       e.stopPropagation();
     },
@@ -948,7 +943,7 @@
       var nd = touchDist(a, b);
       var cx = (a.clientX + b.clientX) / 2;
       var cy = (a.clientY + b.clientY) / 2;
-      pinch.accum += nd - pinch.d; // fingers apart (+) = zoom in
+      pinch.accum += nd - pinch.d;
       pinch.d = nd;
       pickerInfo.lastPinch = Math.round(nd) + "px acc=" + Math.round(pinch.accum);
       var step = CONFIG.pinchStepPx;
@@ -967,32 +962,9 @@
     if (!pinch) return;
     if (!e.touches || e.touches.length < 2) pinch = null;
   }
-  document.addEventListener("touchend", endPinch, {
-    capture: true,
-    passive: true,
-  });
-  document.addEventListener("touchcancel", endPinch, {
-    capture: true,
-    passive: true,
-  });
+  document.addEventListener("touchend", endPinch, { capture: true, passive: true });
+  document.addEventListener("touchcancel", endPinch, { capture: true, passive: true });
 
-  /* ------------------------------------------------------------------ */
-  /* 5c. World-map touch pan bridge                                      */
-  /*                                                                     */
-  /* The client's world map pans on MOUSE drag (mousedown on the map ->  */
-  /* mousemove/mouseup on document) but has no touch handling, so a      */
-  /* finger drag does nothing. We bridge a single-finger touch to that   */
-  /* mouse sequence (same technique as the resize handle). A tap with no */
-  /* drag is forwarded as a click so tapping a room still navigates.     */
-  /* Two-finger gestures are left to the pinch-zoom bridge (5b).         */
-  /* ------------------------------------------------------------------ */
-
-  // Old world map only. map2 (#!/map2) is intentionally NOT bridged: it is
-  // an app2 WebGL component whose drag-pan relies on real pointer-capture
-  // semantics that synthetic mouse/pointer events do not satisfy -- injected
-  // events were misread as a room click (accidental navigation) instead of a
-  // pan (verified across 0.6.2-0.6.4). Use #!/map on mobile for a pannable
-  // map, or see the deeper Angular-component route noted in the README.
   var WORLD_MAP_SEL = "section.world-map .map-container";
   var wmPan = null;
 
@@ -1001,7 +973,6 @@
     function (e) {
       if (!CONFIG.worldMapPan) return;
       if (e.touches.length !== 1) {
-        // A second finger (pinch) ends any active pan cleanly.
         if (wmPan) {
           fireMouse("mouseup", wmPan.target, e.touches[0] || wmPan.last);
           wmPan = null;
@@ -1011,7 +982,7 @@
       if (!(e.target.closest && e.target.closest(WORLD_MAP_SEL))) return;
       var t = e.touches[0];
       wmPan = { target: e.target, x: t.clientX, y: t.clientY, moved: false, last: t };
-      e.preventDefault(); // own the gesture; we synthesize the mouse events
+      e.preventDefault();
       fireMouse("mousedown", e.target, t);
     },
     { capture: true, passive: false },
@@ -1029,7 +1000,7 @@
       ) {
         wmPan.moved = true;
       }
-      e.preventDefault(); // no page scroll while panning
+      e.preventDefault();
       fireMouse("mousemove", wmPan.target, t);
     },
     { capture: true, passive: false },
@@ -1043,42 +1014,17 @@
     pickerInfo.lastWmPan = wmPan.moved ? "drag" : "tap";
     wmPan = null;
   }
-  document.addEventListener("touchend", endWmPan, {
-    capture: true,
-    passive: true,
-  });
-  document.addEventListener("touchcancel", endWmPan, {
-    capture: true,
-    passive: true,
-  });
-
-  /* ------------------------------------------------------------------ */
-  /* 5c-2. map2 (alpha world map) touch pan + pinch zoom                 */
-  /*                                                                     */
-  /* map2 is an app2/Angular + PIXI component. Synthetic pointer/mouse/  */
-  /* touch events never drove its drag-pan -- they were misread as a     */
-  /* room click, causing accidental navigation (0.6.2-0.6.4). Instead we */
-  /* call the component's OWN model API directly, so NO synthetic events */
-  /* exist and a room click can never be spoofed:                        */
-  /*   BaseComponent.onChangeCenter([x,y]) -> pan (updates URL + model)  */
-  /*   BaseComponent.onChangeScale(scale)  -> zoom                        */
-  /*   MapContainer.setCenter([x,y]) / setScale(s) -> immediate render    */
-  /* The instances are read live via the legacy ng.probe() debug API.    */
-  /* Pixels<->rooms is derived from MapContainer.getBound() at gesture    */
-  /* start, so it is correct at any zoom. A single-finger tap under the   */
-  /* drag threshold is left untouched, so tapping a room still navigates  */
-  /* through the client's native handler.                                */
-  /* ------------------------------------------------------------------ */
+  document.addEventListener("touchend", endWmPan, { capture: true, passive: true });
+  document.addEventListener("touchcancel", endWmPan, { capture: true, passive: true });
 
   var MAP2_MIN_SCALE = 0.4,
     MAP2_MAX_SCALE = 5;
-  pickerInfo.lastMap2 = "-"; // diagnostics
+  pickerInfo.lastMap2 = "-";
 
   function onMap2() {
     return (location.hash || "").indexOf("#!/map2") === 0;
   }
 
-  // Resolve the live map2 component instances via the legacy ng.probe API.
   function map2Ctx() {
     if (!window.ng || typeof window.ng.probe !== "function") return null;
     var base = null,
@@ -1095,17 +1041,13 @@
         var mapEl = document.querySelector("app-world-map-map");
         var dm = mapEl && window.ng.probe(mapEl);
         var mapComp = dm && dm.componentInstance;
-        if (mapComp && mapComp.screepsMap)
-          mc = mapComp.screepsMap._mapContainer || null;
+        if (mapComp && mapComp.screepsMap) mc = mapComp.screepsMap._mapContainer || null;
       }
     } catch (e) {}
     if (!base && !mc) return null;
     return { base: base, mc: mc };
   }
 
-  // px-per-room at the current zoom, from the live visible bound. getBound()
-  // returns the room rectangle plus a +2 padding, so the visible span is
-  // (width-2) rooms across _width px.
   function map2PxPerRoom(mc) {
     try {
       var b = mc && mc.getBound();
@@ -1114,11 +1056,7 @@
       if (b.width > 2) px.push(mc._width / (b.width - 2));
       if (b.height > 2) px.push(mc._height / (b.height - 2));
       if (!px.length) return null;
-      return (
-        px.reduce(function (a, c) {
-          return a + c;
-        }, 0) / px.length
-      );
+      return px.reduce(function (a, c) { return a + c; }, 0) / px.length;
     } catch (e) {
       return null;
     }
@@ -1140,10 +1078,6 @@
     } catch (e) {}
     return null;
   }
-  // After moving/zooming the container, re-run the room/stat/user draw
-  // pipeline for the new view. Normally the map emits its bound and
-  // BaseComponent.onBound() redraws; we bypass that path, so drive it
-  // ourselves with the container's live bound ({x,y,width,height}).
   function map2Redraw(ctx) {
     try {
       if (ctx.base && ctx.base.onBound && ctx.mc && ctx.mc.getBound) {
@@ -1153,10 +1087,6 @@
     } catch (e) {}
   }
   function map2SetCenter(ctx, xy) {
-    // setCenter takes an array [x,y] (matches getCenter). We deliberately do
-    // NOT call base.onChangeCenter: its source stores center as a joined
-    // STRING (and its route update is commented out), which would corrupt
-    // the container's numeric center if fed back.
     try {
       if (ctx.mc && ctx.mc.setCenter) ctx.mc.setCenter(xy);
     } catch (e) {}
@@ -1166,14 +1096,13 @@
     try {
       if (ctx.mc && ctx.mc.setScale) ctx.mc.setScale(s);
     } catch (e) {}
-    // Keep the settings panel's scale % in sync (numeric, no corruption).
     try {
       if (ctx.base && ctx.base.onChangeScale) ctx.base.onChangeScale(s);
     } catch (e) {}
     map2Redraw(ctx);
   }
 
-  var m2 = null; // active map2 gesture state
+  var m2 = null;
 
   document.addEventListener(
     "touchstart",
@@ -1210,12 +1139,8 @@
           moved: false,
         };
         pickerInfo.lastMap2 =
-          "pan start c=" +
-          JSON.stringify(m2.startCenter) +
-          " ppr=" +
-          (m2.pxPerRoom ? m2.pxPerRoom.toFixed(1) : "?");
-        // No preventDefault yet: a tap must still reach the native room-click
-        // handler. We only own the gesture once it becomes a drag.
+          "pan start c=" + JSON.stringify(m2.startCenter) +
+          " ppr=" + (m2.pxPerRoom ? m2.pxPerRoom.toFixed(1) : "?");
       }
     },
     { capture: true, passive: false },
@@ -1245,7 +1170,6 @@
         return;
       }
 
-      // pan
       if (e.touches.length !== 1) return;
       var t = e.touches[0];
       var dx = t.clientX - m2.x;
@@ -1257,26 +1181,19 @@
       ) {
         m2.moved = true;
       }
-      if (!m2.moved) return; // still a potential tap; leave it to the client
-      e.preventDefault(); // now a drag: own it (also cancels the native click)
+      if (!m2.moved) return;
+      e.preventDefault();
       e.stopPropagation();
       if (!m2.startCenter || !m2.pxPerRoom) return;
       var ppr = m2.pxPerRoom;
       var sx = CONFIG.map2InvertX ? -dx : dx;
       var sy = CONFIG.map2InvertY ? -dy : dy;
-      // Drag right -> reveal content to the left -> center moves left.
       var nx = m2.startCenter[0] - sx / ppr;
       var ny = m2.startCenter[1] - sy / ppr;
       map2SetCenter(ctx, [nx, ny]);
       pickerInfo.lastMap2 =
-        "pan d=" +
-        Math.round(dx) +
-        "," +
-        Math.round(dy) +
-        " -> " +
-        nx.toFixed(1) +
-        "," +
-        ny.toFixed(1);
+        "pan d=" + Math.round(dx) + "," + Math.round(dy) +
+        " -> " + nx.toFixed(1) + "," + ny.toFixed(1);
     },
     { capture: true, passive: false },
   );
@@ -1287,23 +1204,7 @@
     m2 = null;
   }
   document.addEventListener("touchend", endMap2, { capture: true, passive: true });
-  document.addEventListener("touchcancel", endMap2, {
-    capture: true,
-    passive: true,
-  });
-
-  /* ------------------------------------------------------------------ */
-  /* 5d. Floating settings panel (gear): UI size + default map           */
-  /*                                                                     */
-  /* One bottom-right gear button opens a panel with two rows:           */
-  /*   Map:  auto / classic / alpha  (see 5e for what these do)          */
-  /*   Size: A- / scale / A+ / reset (rewrites the viewport meta live,   */
-  /*         persisted to localStorage; scale = 1280/width, 1.0x..3.0x)  */
-  /* Consolidating both here keeps a single entry point instead of       */
-  /* scattered floating buttons. getMapPref/setMapPref/enforceMapPref    */
-  /* live in 5e (hoisted); this is why buildSettings() is CALLED from    */
-  /* the end of 5e, once those and their localStorage key exist.         */
-  /* ------------------------------------------------------------------ */
+  document.addEventListener("touchcancel", endMap2, { capture: true, passive: true });
 
   function buildSettings() {
     var showSize = CONFIG.sizeControl;
@@ -1317,8 +1218,7 @@
       b.style.cssText =
         "min-width:34px;height:34px;padding:0 8px;color:#eee;" +
         "background:#3a3a3a;border:1px solid #666;border-radius:6px;font:" +
-        (big ? "18px" : "13px") +
-        "/1 sans-serif;";
+        (big ? "18px" : "13px") + "/1 sans-serif;";
       return b;
     }
     function mkRow(labelText) {
@@ -1334,9 +1234,7 @@
     var wrap = document.createElement("div");
     wrap.id = "sm-settings";
     wrap.style.cssText =
-      "position:fixed;right:" +
-      CONFIG.sizeControlRight +
-      "px;bottom:" +
+      "position:fixed;right:" + CONFIG.sizeControlRight + "px;bottom:" +
       CONFIG.sizeControlBottom +
       "px;z-index:99990;display:flex;flex-direction:column;" +
       "align-items:flex-end;gap:6px;";
@@ -1346,17 +1244,12 @@
       "display:none;flex-direction:column;gap:8px;padding:8px 10px;" +
       "background:rgba(22,22,22,0.96);border:1px solid #666;border-radius:10px;";
 
-    // --- Map row: auto / classic / alpha, highlighting the active choice.
     if (showMap) {
       var mapRow = mkRow("Map");
-      var mapOpts = [
-        ["auto", null],
-        ["classic", "map"],
-        ["alpha", "map2"],
-      ];
+      var mapOpts = [["auto", null], ["classic", "map"], ["alpha", "map2"]];
       var mapBtns = [];
       var syncMap = function () {
-        var cur = getMapPref(); // null | "map" | "map2"
+        var cur = getMapPref();
         mapBtns.forEach(function (b) {
           var on = (b.getAttribute("data-pref") || "") === (cur || "");
           b.style.background = on ? "#2d6cdf" : "#3a3a3a";
@@ -1378,7 +1271,6 @@
       panel.appendChild(mapRow);
     }
 
-    // --- Size row: A- / scale / A+ / reset.
     if (showSize) {
       var sizeRow = mkRow("Size");
       var minus = mkBtn("A−", true);
@@ -1388,21 +1280,15 @@
         "min-width:44px;text-align:center;color:#ddd;font:15px/1 sans-serif;";
       var plus = mkBtn("A＋", true);
       var reset = mkBtn("↺", true);
-      var refresh = function () {
-        smRefreshSizeLabel();
-      };
+      var refresh = function () { smRefreshSizeLabel(); };
       var step = function (deltaScale) {
         var s = 1280 / smCurrentWidth();
         s = Math.max(1.0, Math.min(3.0, Math.round((s + deltaScale) * 10) / 10));
         smApplyViewport(smClampWidth(1280 / s), true);
         refresh();
       };
-      minus.addEventListener("click", function () {
-        step(-0.1);
-      });
-      plus.addEventListener("click", function () {
-        step(0.1);
-      });
+      minus.addEventListener("click", function () { step(-0.1); });
+      plus.addEventListener("click", function () { step(0.1); });
       reset.addEventListener("click", function () {
         smResetViewport();
         refresh();
@@ -1428,23 +1314,6 @@
     document.body.appendChild(wrap);
   }
 
-  /* ------------------------------------------------------------------ */
-  /* 5e. Default world-map preference (classic #!/map <-> alpha #!/map2)  */
-  /*                                                                     */
-  /* Screeps has two separate world-map apps. The preference (set from   */
-  /* the gear panel's Map row, 5d) is remembered in                      */
-  /* localStorage["sm.defaultMap"]; once set (not "auto") every route to */
-  /* the other map is steered to your choice. Two entry points are       */
-  /* covered: the hamburger menu's World item and the room view's globe  */
-  /* button -- both are hashbang <a> links, so a capture-phase click      */
-  /* interceptor rewrites them BEFORE the wrong app loads (avoiding the   */
-  /* "classic flashes, flips to alpha on touch" bug). A hashchange        */
-  /* listener is the fallback for direct-URL / programmatic navigation.  */
-  /* classic and alpha use different suffix formats (alpha: ?pos=x,y),    */
-  /* so conversion keeps only the shard (+ pos into alpha) to never       */
-  /* produce a route the target app can't parse.                         */
-  /* ------------------------------------------------------------------ */
-
   var MAP_PREF_KEY = "sm.defaultMap";
   function getMapPref() {
     try {
@@ -1462,17 +1331,10 @@
     resetMapEnforceGuard(v);
   }
 
-  // Match a world-map hash. Returns { isMap2, rest } where rest is the
-  // /shard?pos=... suffix (or ""), or null if the hash isn't a map route.
-  // The lookahead keeps #!/market etc. from matching.
   function parseMapHash(hash) {
     var m = (hash || "").match(/^#!\/map(2)?($|[\/?].*)$/);
     return m ? { isMap2: m[1] === "2", rest: m[2] || "" } : null;
   }
-  // Build a valid hash for the preferred map from an arbitrary map suffix.
-  // Keeps the shard; carries a pos only into alpha (its ?pos= scheme). This
-  // avoids emitting e.g. #!/map2/shard/W1N1 (a room-name path alpha can't
-  // read) when swapping from the classic map's format.
   function buildMapTarget(want2, rest) {
     var shard = "";
     var sm = (rest || "").match(/^\/([^/?#]+)/);
@@ -1486,16 +1348,8 @@
     return t;
   }
 
-  // A fallback replace can be rejected by the currently mounted map app. On
-  // login that looks like source -> preferred target -> exact source again.
-  // Detect the first quick rejection and stop fighting the client at that
-  // source until navigation genuinely leaves it or the preference changes.
   var MAP_HANDOFF_WINDOW_MS = 2500;
-  var mapEnforceState = {
-    pref: null,
-    pending: null,
-    blockedSource: null,
-  };
+  var mapEnforceState = { pref: null, pending: null, blockedSource: null };
   var mapEnforceLastReason = "idle";
 
   function resetMapEnforceGuard(pref) {
@@ -1507,8 +1361,6 @@
     mapEnforceLastReason = "preference-reset";
   }
 
-  // Pure transition: no location/localStorage/clock access. `target` is the
-  // one replacement the caller should perform, or null when it should wait.
   function mapEnforceTransition(state, pref, hash, now, windowMs) {
     pref = pref === "map" || pref === "map2" ? pref : null;
     hash = hash || "";
@@ -1537,7 +1389,6 @@
       if (hash === next.blockedSource) {
         return { state: next, target: null, reason: "source-blocked" };
       }
-      // Leaving the exact rejected source re-arms future handoffs.
       next.blockedSource = null;
       next.pending = null;
     }
@@ -1556,21 +1407,12 @@
           next.blockedSource = hash;
           return { state: next, target: null, reason: "source-reverted" };
         }
-        // The replace is still in flight; never issue a duplicate.
         return { state: next, target: null, reason: "handoff-pending" };
       } else {
-        // The target app may normalize its route or append a position. Any
-        // route in the preferred map app proves arrival just as reliably as
-        // the exact generated target; retain the pending source so a quick
-        // client reversion can still be recognized.
         var arrivedRoute = parseMapHash(hash);
         if (arrivedRoute && arrivedRoute.isMap2 === (pref === "map2")) {
           pending.accepted = true;
-          return {
-            state: next,
-            target: null,
-            reason: "target-normalized",
-          };
+          return { state: next, target: null, reason: "target-normalized" };
         }
         next.pending = null;
       }
@@ -1583,12 +1425,7 @@
     }
 
     var target = buildMapTarget(pref === "map2", route.rest);
-    next.pending = {
-      source: hash,
-      target: target,
-      time: now,
-      accepted: false,
-    };
+    next.pending = { source: hash, target: target, time: now, accepted: false };
     return { state: next, target: target, reason: "replace" };
   }
 
@@ -1603,22 +1440,15 @@
     );
     mapEnforceState = result.state;
     mapEnforceLastReason = result.reason;
-    // Fallback path (direct URL entry, programmatic nav): at most one replace
-    // until the target is accepted or the handoff window expires.
     if (result.target) location.replace(result.target);
   }
   window.addEventListener("hashchange", enforceMapPref);
-  enforceMapPref(); // apply on initial load too
+  enforceMapPref();
 
-  // Extract the shard token from the current hash (room / map route).
   function currentShard() {
     var m = (location.hash || "").match(/(shard[^/?#]+)/i);
     return m ? m[1] : "";
   }
-  // Build an alpha-map hash for the room currently being viewed. The room
-  // name in the hash (e.g. E7S5 / W44N22) maps to the alpha map's pos=x,y
-  // using the client's own convention: E/S positive, W/N negative, room
-  // centre +0.5 -- so goToMap()'s pos is reproduced exactly.
   function roomToMap2Hash() {
     var shard = currentShard();
     var t = "#!/map2" + (shard ? "/" + shard : "");
@@ -1631,15 +1461,6 @@
     return t;
   }
 
-  // Primary path: rewrite the navigation BEFORE the wrong map ever loads.
-  // Two entry points, two shapes:
-  //  (a) hashbang <a> links -- the hamburger menu's World item;
-  //  (b) the room view's globe <button ng-click="Room.goToMap()"> -- not an
-  //      anchor, and it always targets the CLASSIC map, which the old
-  //      AngularJS client then refuses to hand off to the unknown /map2 route
-  //      (so a post-hoc redirect leaves you stuck on classic).
-  // Capture phase runs before the link/ng-click handler, so preventing it and
-  // navigating straight to the preferred hash lands on the right app cleanly.
   document.addEventListener(
     "click",
     function (e) {
@@ -1647,7 +1468,6 @@
       if (!pref) return;
       var want2 = pref === "map2";
 
-      // (a) hashbang anchor map links.
       var a = e.target.closest && e.target.closest("a[href]");
       if (a) {
         var href = a.getAttribute("href") || "";
@@ -1661,7 +1481,6 @@
         }
       }
 
-      // (b) room globe button -> goToMap() (classic). Only redirect to alpha.
       if (want2) {
         var g = e.target.closest && e.target.closest("[ng-click]");
         var ngc = (g && g.getAttribute("ng-click")) || "";
@@ -1675,35 +1494,12 @@
     true,
   );
 
-  // Build the unified gear panel (5d) now that the map-pref helpers exist.
   buildSettings();
-
-  /* ------------------------------------------------------------------ */
-  /* 5f. Room-view edge navigation for touch                             */
-  /*                                                                     */
-  /* The room game field (section.room .game-field-container) renders a  */
-  /* ".exit" arrow strip (div.exit.exit-top/-bottom/-left/-right, each   */
-  /* bound ng-click="Room.switchRoom(dir)") along every side that HAS an */
-  /* exit. A mouse click on the strip navigates to that neighbor room,   */
-  /* but a finger tap never reaches it, so the edges do nothing on       */
-  /* mobile. Bridge: on a single-finger TAP (no drag) that lands on an   */
-  /* ".exit" strip, forward a click to that element so the client's own  */
-  /* handler runs -- no coordinate/room-name math, zoom/pan-safe (the    */
-  /* strips' live rects move with the view), and only sides that have an */
-  /* exit exist, so an impossible route can't be built. A tap anywhere   */
-  /* else is left untouched, so object selection is unaffected.          */
-  /* (Confirmed on-device: dispatching a click on the .exit div drives   */
-  /* Room.switchRoom and navigates; the divs are pointer-events:auto and */
-  /* inset from the letterboxed container edge, which is why the raw     */
-  /* container-edge tap misses them.)                                    */
-  /* ------------------------------------------------------------------ */
 
   var ROOM_FIELD_SEL = "section.room .game-field-container";
   var edgeTap = null;
-  pickerInfo.lastEdgeNav = "-"; // diagnostics
+  pickerInfo.lastEdgeNav = "-";
 
-  // The .exit strip whose rect (padded by margin) contains the point, or
-  // null. Strips don't overlap; near a corner we pick the nearest center.
   function exitAtPoint(x, y, margin) {
     var exits = document.querySelectorAll("section.room .exit");
     var best = null,
@@ -1752,7 +1548,7 @@
         Math.abs(t.clientX - edgeTap.x) > 10 ||
         Math.abs(t.clientY - edgeTap.y) > 10
       ) {
-        edgeTap.moved = true; // pan/pinch, not a tap
+        edgeTap.moved = true;
       }
     },
     { capture: true, passive: true },
@@ -1767,14 +1563,12 @@
       if (e.changedTouches.length !== 1) return;
       var t = e.changedTouches[0];
       var ex = exitAtPoint(t.clientX, t.clientY, CONFIG.roomEdgeMargin);
-      if (!ex) return; // not on an exit strip: leave the native tap alone
-      // Own the tap so the native (no-op) click can't also fire.
+      if (!ex) return;
       e.preventDefault();
       pickerInfo.lastEdgeNav =
         typeof ex.className === "string"
           ? "." + ex.className.trim().split(/\s+/).slice(0, 3).join(".")
           : "exit";
-      // Route through the client's own ng-click handler (proven to navigate).
       ["mousedown", "mouseup", "click"].forEach(function (type) {
         ex.dispatchEvent(
           new MouseEvent(type, {
@@ -1789,41 +1583,26 @@
     { capture: true, passive: false },
   );
 
-  /* ------------------------------------------------------------------ */
-  /* 6. Diagnostics: window.__smDump() or triple-tap the navbar logo     */
-  /* ------------------------------------------------------------------ */
-
   function dump() {
     var lines = [];
     lines.push("screeps-mobile-ux " + SM_VERSION);
     lines.push(
-      "uiSize: width=" +
-        smCurrentWidth() +
-        " scale=" +
-        (1280 / smCurrentWidth()).toFixed(2) +
-        "x saved=" +
-        (smSavedWidth() != null ? smSavedWidth() : "no"),
+      "uiSize: width=" + smCurrentWidth() +
+        " scale=" + (1280 / smCurrentWidth()).toFixed(2) +
+        "x saved=" + (smSavedWidth() != null ? smSavedWidth() : "no"),
     );
     lines.push("zoomFactor: " + zoomFactor().toFixed(2));
     lines.push("ua: " + navigator.userAgent);
     lines.push(
-      "inner: " +
-        window.innerWidth +
-        "x" +
-        window.innerHeight +
+      "inner: " + window.innerWidth + "x" + window.innerHeight +
         (window.visualViewport
-          ? " | visual: " +
-            Math.round(window.visualViewport.width) +
-            "x" +
-            Math.round(window.visualViewport.height) +
-            " scale " +
+          ? " | visual: " + Math.round(window.visualViewport.width) + "x" +
+            Math.round(window.visualViewport.height) + " scale " +
             window.visualViewport.scale.toFixed(2)
           : ""),
     );
     var vp = document.querySelector('meta[name="viewport"]');
-    lines.push(
-      "viewport meta: " + (vp ? vp.getAttribute("content") : "(none)"),
-    );
+    lines.push("viewport meta: " + (vp ? vp.getAttribute("content") : "(none)"));
 
     var sels = [
       "header.navbar",
@@ -1847,20 +1626,11 @@
       }
       var r = el.getBoundingClientRect();
       lines.push(
-        s +
-          ": x=" +
-          Math.round(r.x) +
-          " y=" +
-          Math.round(r.y) +
-          " w=" +
-          Math.round(r.width) +
-          " h=" +
-          Math.round(r.height),
+        s + ": x=" + Math.round(r.x) + " y=" + Math.round(r.y) +
+          " w=" + Math.round(r.width) + " h=" + Math.round(r.height),
       );
     });
 
-    // Map probe: identify the current map view (map vs map2) and the
-    // container/canvas under it so pan/zoom bridges can target it.
     function desc(el) {
       var cls =
         el && typeof el.className === "string" && el.className.trim()
@@ -1871,39 +1641,22 @@
     lines.push("hash: " + location.hash);
     var mapPending = mapEnforceState.pending;
     lines.push(
-      "map enforce: pref=" +
-        (mapEnforceState.pref || "auto") +
-        " last=" +
-        mapEnforceLastReason +
+      "map enforce: pref=" + (mapEnforceState.pref || "auto") +
+        " last=" + mapEnforceLastReason +
         " pending=" +
         (mapPending
-          ? mapPending.source +
-            " -> " +
-            mapPending.target +
-            " accepted=" +
-            (mapPending.accepted ? "yes" : "no") +
-            " age=" +
-            Math.max(0, Date.now() - mapPending.time) +
-            "ms"
+          ? mapPending.source + " -> " + mapPending.target +
+            " accepted=" + (mapPending.accepted ? "yes" : "no") +
+            " age=" + Math.max(0, Date.now() - mapPending.time) + "ms"
           : "none") +
-        " blocked=" +
-        (mapEnforceState.blockedSource || "none"),
+        " blocked=" + (mapEnforceState.blockedSource || "none"),
     );
-    var sections = Array.prototype.slice.call(
-      document.querySelectorAll("section"),
-    );
-    lines.push(
-      "sections: " +
-        (sections.map(desc).join(", ") || "(none)"),
-    );
+    var sections = Array.prototype.slice.call(document.querySelectorAll("section"));
+    lines.push("sections: " + (sections.map(desc).join(", ") || "(none)"));
     var cx = Math.round(window.innerWidth / 2);
     var cy = Math.round(window.innerHeight / 2);
     lines.push(
-      "at-center(" +
-        cx +
-        "," +
-        cy +
-        "): " +
+      "at-center(" + cx + "," + cy + "): " +
         document.elementsFromPoint(cx, cy).slice(0, 6).map(desc).join(" | "),
     );
     var canv = document.querySelector("section canvas") || document.querySelector("canvas");
@@ -1920,13 +1673,7 @@
       lines.push("canvas: (none)");
     }
 
-    // What is stacked in the top-left corner (overlap diagnosis).
-    [
-      [30, 21],
-      [120, 21],
-      [30, 70],
-      [30, 120],
-    ].forEach(function (p) {
+    [[30, 21], [120, 21], [30, 70], [30, 120]].forEach(function (p) {
       var stack = document
         .elementsFromPoint(p[0], p[1])
         .slice(0, 5)
@@ -1941,20 +1688,14 @@
     });
 
     var roomEl = document.querySelector("section.room");
-    var scope =
-      window.angular && roomEl && window.angular.element(roomEl).scope();
+    var scope = window.angular && roomEl && window.angular.element(roomEl).scope();
     lines.push(
       "room scope: " +
         (scope && scope.Room
-          ? "ok, objects=" +
-            ((scope.Room.objects && scope.Room.objects.length) || 0) +
-            ", selected=" +
-            (scope.Room.selectedObject
-              ? scope.Room.selectedObject.type
-              : "null")
+          ? "ok, objects=" + ((scope.Room.objects && scope.Room.objects.length) || 0) +
+            ", selected=" + (scope.Room.selectedObject ? scope.Room.selectedObject.type : "null")
           : "none"),
     );
-
     lines.push(
       "selectedAction: " +
         (scope && scope.Room && scope.Room.selectedAction
@@ -1962,41 +1703,30 @@
           : "n/a"),
     );
     lines.push(
-      "picker: lastTile=" +
-        pickerInfo.lastTile +
-        " stack=" +
-        pickerInfo.lastStack +
-        " sheet=" +
-        (document.getElementById("sm-tile-picker") ? "visible" : "hidden"),
+      "picker: lastTile=" + pickerInfo.lastTile + " stack=" + pickerInfo.lastStack +
+        " sheet=" + (document.getElementById("sm-tile-picker") ? "visible" : "hidden"),
     );
+    lines.push("roomTap: " + (pickerInfo.lastRoomTap || "-"));
     lines.push("pinch: " + pickerInfo.lastPinch);
     lines.push(
-      "wmPan: " +
-        (pickerInfo.lastWmPan || "-") +
-        " container=" +
-        (document.querySelector(WORLD_MAP_SEL) ? "yes" : "no"),
+      "wmPan: " + (pickerInfo.lastWmPan || "-") +
+        " container=" + (document.querySelector(WORLD_MAP_SEL) ? "yes" : "no"),
     );
     lines.push(
-      "map2: " +
-        (pickerInfo.lastMap2 || "-") +
-        " onMap2=" +
-        (onMap2() ? "yes" : "no"),
+      "map2: " + (pickerInfo.lastMap2 || "-") +
+        " onMap2=" + (onMap2() ? "yes" : "no"),
     );
     lines.push("defaultMap pref: " + (getMapPref() || "auto"));
     lines.push(
-      "edgeNav: " +
-        (pickerInfo.lastEdgeNav || "-") +
-        " exits=" +
-        document.querySelectorAll("section.room .exit").length,
+      "edgeNav: " + (pickerInfo.lastEdgeNav || "-") +
+        " exits=" + document.querySelectorAll("section.room .exit").length,
     );
 
     var ctrl = panelCtrl();
     lines.push(
-      "resize panel ctrl: " +
-        (ctrl ? "ok, height=" + ctrl.ctrl.getHeight() : "none"),
+      "resize panel ctrl: " + (ctrl ? "ok, height=" + ctrl.ctrl.getHeight() : "none"),
     );
 
-    // map2 (alpha world map) component probe -- only meaningful on #!/map2.
     try {
       lines.push("");
       lines.push(map2Probe());
@@ -2006,15 +1736,6 @@
     return lines.join("\n");
   }
 
-  /* ------------------------------------------------------------------ */
-  /* map2 probe: health-check for the alpha-map pan/zoom bridge (5c-2).  */
-  /*                                                                     */
-  /* Verifies the component instances still resolve and that the exact   */
-  /* methods/values the bridge depends on are present -- so if a client  */
-  /* update renames or moves them, this dump shows precisely what broke. */
-  /* Reuses the same map2Ctx()/map2Center()/... helpers the bridge uses. */
-  /* Open #!/map2 first, then triple-tap the burger (or __smDump()).     */
-  /* ------------------------------------------------------------------ */
   function map2Probe() {
     var L = ["=== map2 probe ==="];
     L.push("hash: " + location.hash + " onMap2=" + (onMap2() ? "yes" : "no"));
@@ -2023,59 +1744,45 @@
         (window.ng
           ? "keys=" + Object.keys(window.ng).slice(0, 8).join(",")
           : typeof window.ng) +
-        " | PIXI: " +
-        (window.PIXI ? window.PIXI.VERSION : "absent"),
+        " | PIXI: " + (window.PIXI ? window.PIXI.VERSION : "absent"),
     );
 
     var ctx = map2Ctx();
     if (!ctx) {
-      L.push(
-        "ctx: NOT RESOLVED (ng.probe / app-world-map-base missing) -- open #!/map2",
-      );
+      L.push("ctx: NOT RESOLVED (ng.probe / app-world-map-base missing) -- open #!/map2");
       return L.join("\n");
     }
     var base = ctx.base,
       mc = ctx.mc;
     L.push(
-      "base: " +
-        (base ? base.constructor && base.constructor.name : "null") +
-        " | container: " +
-        (mc ? mc.constructor && mc.constructor.name : "null"),
+      "base: " + (base ? base.constructor && base.constructor.name : "null") +
+        " | container: " + (mc ? mc.constructor && mc.constructor.name : "null"),
     );
 
-    // Live values the pan/zoom math relies on.
     var bound = null;
     try {
       bound = mc && mc.getBound && mc.getBound();
     } catch (e) {}
     var ppr = map2PxPerRoom(mc);
     L.push(
-      "center=" +
-        JSON.stringify(map2Center(ctx)) +
-        " scale=" +
-        JSON.stringify(map2Scale(ctx)),
+      "center=" + JSON.stringify(map2Center(ctx)) +
+        " scale=" + JSON.stringify(map2Scale(ctx)),
     );
     L.push(
-      "bound=" + JSON.stringify(bound) + " pxPerRoom=" + (ppr ? ppr.toFixed(2) : "?"),
+      "bound=" + JSON.stringify(bound) +
+        " pxPerRoom=" + (ppr ? ppr.toFixed(2) : "?"),
     );
 
-    // Presence of the exact methods the bridge calls (y = ok, N = missing).
     function has(o, m) {
       return o && typeof o[m] === "function" ? "y" : "N";
     }
     L.push(
-      "methods base.onBound=" +
-        has(base, "onBound") +
-        " base.onChangeScale=" +
-        has(base, "onChangeScale") +
-        " | mc.setCenter=" +
-        has(mc, "setCenter") +
-        " mc.setScale=" +
-        has(mc, "setScale") +
-        " mc.getCenter=" +
-        has(mc, "getCenter") +
-        " mc.getBound=" +
-        has(mc, "getBound"),
+      "methods base.onBound=" + has(base, "onBound") +
+        " base.onChangeScale=" + has(base, "onChangeScale") +
+        " | mc.setCenter=" + has(mc, "setCenter") +
+        " mc.setScale=" + has(mc, "setScale") +
+        " mc.getCenter=" + has(mc, "getCenter") +
+        " mc.getBound=" + has(mc, "getBound"),
     );
     return L.join("\n");
   }
@@ -2086,17 +1793,13 @@
     return out;
   };
 
-  // Triple-tap the navbar burger/logo to show the dump on screen
-  // (mobile browsers have no dev console without USB debugging).
   var brandTaps = [];
   document.addEventListener(
     "touchend",
     function (e) {
       if (!(e.target.closest && e.target.closest(".navbar-brand"))) return;
       var now = e.timeStamp;
-      brandTaps = brandTaps.filter(function (t) {
-        return now - t < 1200;
-      });
+      brandTaps = brandTaps.filter(function (t) { return now - t < 1200; });
       brandTaps.push(now);
       if (brandTaps.length >= 3) {
         brandTaps = [];
@@ -2139,9 +1842,7 @@
       else document.execCommand("copy");
       btnCopy.textContent = "Copied";
     });
-    btnClose.addEventListener("click", function () {
-      wrap.remove();
-    });
+    btnClose.addEventListener("click", function () { wrap.remove(); });
     row.appendChild(btnCopy);
     row.appendChild(btnClose);
     wrap.appendChild(ta);
