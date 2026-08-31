@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.9.6
+// @version      0.9.7
 // @description  Mobile UX fixes for screeps.com: room-edge navigation, map touch controls, visible navbar status, spaced room controls, touch resize, same-tile picker, larger UI.
 // @author       sy-harabi
 // @license      MIT
@@ -36,7 +36,7 @@
 
   // Keep in sync with the @version header above; the dump prints this so the
   // on-screen header never lies about which build is loaded.
-  var SM_VERSION = "0.9.6";
+  var SM_VERSION = "0.9.7";
 
   var CONFIG = {
     // Apply the CSS only on coarse-pointer (touch) devices.
@@ -147,6 +147,16 @@
     // tiles remain easy to select instead of triggering room navigation.
     roomEdgeMargin: 4,
   };
+
+  // On desktop, do no work at all unless touchOnly is disabled explicitly.
+  // This keeps the userscript effectively zero-cost outside its target UI.
+  if (
+    CONFIG.touchOnly &&
+    window.matchMedia &&
+    !window.matchMedia("(pointer: coarse)").matches
+  ) {
+    return;
+  }
 
   /* ------------------------------------------------------------------ */
   /* 1. CSS: navbar/control spacing, touch-sized picker, resize grip     */
@@ -492,27 +502,22 @@
     });
   }
 
-  function findPopup(node) {
-    if (node.nodeType !== 1) return null;
-    if (node.matches && node.matches(".view-popup")) return node;
-    return node.querySelector && node.querySelector(".view-popup");
-  }
-
-  new MutationObserver(function (mutations) {
-    for (var i = 0; i < mutations.length; i++) {
-      var m = mutations[i];
-      for (var j = 0; j < m.addedNodes.length; j++) {
-        var pop = findPopup(m.addedNodes[j]);
-        if (pop) {
-          clampIntoView(pop);
-          if (CONFIG.popupPicker) mirrorPopupToSheet(pop);
-        }
+  // Check for the native same-tile popup only after an actual room tap.
+  // This replaces the previous body-wide MutationObserver, so Screeps DOM
+  // churn creates no userscript work while the user is idle.
+  function scheduleNativePopupCheck() {
+    var tries = 0;
+    function check() {
+      var pop = document.querySelector(".view-popup");
+      if (pop) {
+        clampIntoView(pop);
+        if (CONFIG.popupPicker) mirrorPopupToSheet(pop);
+        return;
       }
-      for (var k = 0; k < m.removedNodes.length; k++) {
-        if (findPopup(m.removedNodes[k])) onPopupGone();
-      }
+      if (tries++ < 3) requestAnimationFrame(check);
     }
-  }).observe(document.body, { childList: true, subtree: true });
+    requestAnimationFrame(check);
+  }
 
   var pickerInfo = { lastTile: "-", lastStack: -1 };
   var roomTap = null;
@@ -713,7 +718,8 @@
         }
       }
 
-      if (!commit) dismissPopup();
+      if (commit) scheduleNativePopupCheck();
+      else dismissPopup();
     };
 
     // A microtask runs after the native touchend/touchcancel handlers finish
@@ -752,6 +758,11 @@
       if (!scope) return;
       var action = scope.Room.selectedAction && scope.Room.selectedAction.action;
       if (action && action !== "view") return;
+
+      // Clear any picker left by the previous tap before starting a new room
+      // gesture. Without the old global observer, cleanup is interaction-led.
+      dismissPopup();
+
       var t = e.touches[0];
       var tap = {
         x: t.clientX,
@@ -951,11 +962,6 @@
         }),
       );
     });
-  }
-
-  function onPopupGone() {
-    hideSheet();
-    activePopup = null;
   }
 
   function dismissPopup() {
