@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.9.5
+// @version      0.9.6
 // @description  Mobile UX fixes for screeps.com: room-edge navigation, map touch controls, visible navbar status, spaced room controls, touch resize, same-tile picker, larger UI.
 // @author       sy-harabi
 // @license      MIT
@@ -36,7 +36,7 @@
 
   // Keep in sync with the @version header above; the dump prints this so the
   // on-screen header never lies about which build is loaded.
-  var SM_VERSION = "0.9.5";
+  var SM_VERSION = "0.9.6";
 
   var CONFIG = {
     // Apply the CSS only on coarse-pointer (touch) devices.
@@ -544,16 +544,130 @@
     }
   }
 
+  // Install before the client's room touch handler runs (document capture).
+  // Writes to selectedObject and roomObjectSelected broadcasts are held as a
+  // candidate while reads continue to see the previous selection. This keeps
+  // both the blue selection circle and the info sidebar stable until release.
+  function installRoomSelectionGate(tap, scope) {
+    if (!tap || !scope || !scope.Room) return false;
+    var room = scope.Room;
+    var descriptor = null;
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(room, "selectedObject") || null;
+      if (descriptor && descriptor.configurable === false) return false;
+    } catch (e) {
+      return false;
+    }
+
+    var root = scope.$root || null;
+    var gate = {
+      room: room,
+      descriptor: descriptor,
+      hadOwn: !!descriptor,
+      previous: tap.previousSelected,
+      root: root,
+      originalBroadcast: root && typeof root.$broadcast === "function" ? root.$broadcast : null,
+      broadcastWrapper: null,
+    };
+
+    try {
+      Object.defineProperty(room, "selectedObject", {
+        configurable: true,
+        enumerable: descriptor ? descriptor.enumerable : true,
+        get: function () {
+          return gate.previous;
+        },
+        set: function (value) {
+          tap.candidateSelected = value || null;
+          tap.hasCandidate = true;
+        },
+      });
+    } catch (e) {
+      return false;
+    }
+
+    if (gate.originalBroadcast) {
+      gate.broadcastWrapper = function (name) {
+        if (roomTap === tap && name === "roomObjectSelected") {
+          if (arguments.length > 1) {
+            tap.candidateSelected = arguments[1] || null;
+            tap.hasCandidate = true;
+          }
+          return {
+            name: name,
+            targetScope: root,
+            currentScope: null,
+            defaultPrevented: false,
+            preventDefault: function () {
+              this.defaultPrevented = true;
+            },
+          };
+        }
+        return gate.originalBroadcast.apply(this, arguments);
+      };
+      try {
+        root.$broadcast = gate.broadcastWrapper;
+      } catch (e) {
+        gate.broadcastWrapper = null;
+      }
+    }
+
+    tap.selectionGate = gate;
+    return true;
+  }
+
+  function releaseRoomSelectionGate(tap, commit) {
+    var gate = tap && tap.selectionGate;
+    if (!gate) return false;
+    tap.selectionGate = null;
+
+    if (
+      gate.root &&
+      gate.broadcastWrapper &&
+      gate.root.$broadcast === gate.broadcastWrapper
+    ) {
+      try {
+        gate.root.$broadcast = gate.originalBroadcast;
+      } catch (e) {}
+    }
+
+    try {
+      if (gate.hadOwn) {
+        Object.defineProperty(gate.room, "selectedObject", gate.descriptor);
+      } else {
+        delete gate.room.selectedObject;
+      }
+    } catch (e) {
+      try {
+        Object.defineProperty(gate.room, "selectedObject", {
+          configurable: true,
+          enumerable: true,
+          writable: true,
+          value: tap.previousSelected,
+        });
+      } catch (ignored) {}
+    }
+
+    var scope = getRoomScope();
+    if (!scope || scope.Room !== gate.room) return true;
+    if (commit && tap.hasCandidate) {
+      setRoomSelection(scope, tap.candidateSelected);
+    } else if (!sameSelectedObject(scope.Room.selectedObject, tap.previousSelected)) {
+      setRoomSelection(scope, tap.previousSelected);
+    }
+    return true;
+  }
+
+  // Fallback for clients where selectedObject cannot be temporarily wrapped.
+  // This is the old v0.9.5 behavior: restore a native selection before paint.
   function sampleNativeRoomSelection(tap) {
-    if (!tap || roomTap !== tap || tap.cancelled) return;
+    if (!tap || roomTap !== tap || tap.cancelled || tap.selectionGate) return;
     var scope = getRoomScope();
     if (!scope) return;
     var current = scope.Room.selectedObject || null;
     if (sameSelectedObject(current, tap.previousSelected)) return;
     tap.candidateSelected = current;
     tap.hasCandidate = true;
-    // The client selects on touchstart. Put the old selection back before the
-    // browser paints; a genuine tap will commit the candidate on touchend.
     setRoomSelection(scope, tap.previousSelected);
   }
 
@@ -562,13 +676,51 @@
     tap.moved = true;
     tap.cancelled = true;
     pickerInfo.lastRoomTap = reason || "cancel";
-    var scope = getRoomScope();
-    if (scope && !sameSelectedObject(scope.Room.selectedObject, tap.previousSelected)) {
-      setRoomSelection(scope, tap.previousSelected);
+    // Keep the gate installed until the entire touch sequence ends. This is
+    // important for pinch: one finger can lift while another is still down.
+    if (!tap.selectionGate) {
+      var scope = getRoomScope();
+      if (scope && !sameSelectedObject(scope.Room.selectedObject, tap.previousSelected)) {
+        setRoomSelection(scope, tap.previousSelected);
+      }
     }
-    // A stacked-tile native popup may already have been created/mirrored.
-    // Keep the previous selection and discard that picker for a pan/pinch.
     dismissPopup();
+  }
+
+  function scheduleRoomTouchFinalize(tap, commit) {
+    if (!tap || tap.finalizeScheduled) return;
+    tap.finalizeScheduled = true;
+    var finish = function () {
+      if (roomTap !== tap) return;
+      if (!tap.selectionGate && !tap.cancelled) sampleNativeRoomSelection(tap);
+      roomTap = null;
+      document.documentElement.classList.remove(ROOM_TOUCH_PENDING_CLASS);
+
+      if (tap.selectionGate) {
+        releaseRoomSelectionGate(tap, commit);
+      } else if (commit) {
+        var scopeCommit = getRoomScope();
+        if (scopeCommit && tap.hasCandidate) {
+          setRoomSelection(scopeCommit, tap.candidateSelected);
+        }
+      } else {
+        var scopeCancelled = getRoomScope();
+        if (
+          scopeCancelled &&
+          !sameSelectedObject(scopeCancelled.Room.selectedObject, tap.previousSelected)
+        ) {
+          setRoomSelection(scopeCancelled, tap.previousSelected);
+        }
+      }
+
+      if (!commit) dismissPopup();
+    };
+
+    // A microtask runs after the native touchend/touchcancel handlers finish
+    // but before the browser paints, so those handlers are gated too.
+    if (typeof queueMicrotask === "function") queueMicrotask(finish);
+    else if (typeof Promise === "function") Promise.resolve().then(finish);
+    else setTimeout(finish, 0);
   }
 
   function objectsAt(scope, x, y) {
@@ -609,19 +761,23 @@
         previousSelected: scope.Room.selectedObject || null,
         candidateSelected: null,
         hasCandidate: false,
+        selectionGate: null,
+        finalizeScheduled: false,
       };
       roomTap = tap;
       document.documentElement.classList.add(ROOM_TOUCH_PENDING_CLASS);
 
-      // Capture the client's synchronous/deferred touchstart selection before
-      // paint and immediately restore the previous selection while unresolved.
-      var sample = function () {
-        sampleNativeRoomSelection(tap);
-      };
-      if (typeof queueMicrotask === "function") queueMicrotask(sample);
-      else if (typeof Promise === "function") Promise.resolve().then(sample);
-      else setTimeout(sample, 0);
-      requestAnimationFrame(sample);
+      if (!installRoomSelectionGate(tap, scope)) {
+        // Fallback: capture the client's synchronous/deferred touchstart
+        // selection and restore the previous one before paint.
+        var sample = function () {
+          sampleNativeRoomSelection(tap);
+        };
+        if (typeof queueMicrotask === "function") queueMicrotask(sample);
+        else if (typeof Promise === "function") Promise.resolve().then(sample);
+        else setTimeout(sample, 0);
+        requestAnimationFrame(sample);
+      }
     },
     { passive: true, capture: true },
   );
@@ -650,30 +806,24 @@
     function (e) {
       var tap = roomTap;
       if (!tap) return;
-      // Catch any last native selection change before resolving the gesture.
-      if (!tap.cancelled) sampleNativeRoomSelection(tap);
-      roomTap = null;
-      document.documentElement.classList.remove(ROOM_TOUCH_PENDING_CLASS);
+      if (!tap.selectionGate && !tap.cancelled) sampleNativeRoomSelection(tap);
 
-      var wasTap = !tap.moved && !tap.cancelled && e.changedTouches.length === 1;
-      if (!wasTap) {
-        var scopeCancelled = getRoomScope();
-        if (
-          scopeCancelled &&
-          !sameSelectedObject(scopeCancelled.Room.selectedObject, tap.previousSelected)
-        ) {
-          setRoomSelection(scopeCancelled, tap.previousSelected);
-        }
-        dismissPopup();
-        return;
-      }
+      // During a cancelled multi-touch gesture, keep gating until the final
+      // finger is lifted. Otherwise the remaining finger could select again.
+      if (tap.cancelled && e.touches && e.touches.length > 0) return;
 
-      pickerInfo.lastRoomTap = "tap";
-      var scope = getRoomScope();
-      if (scope && tap.hasCandidate) setRoomSelection(scope, tap.candidateSelected);
+      var wasTap =
+        !tap.moved &&
+        !tap.cancelled &&
+        e.changedTouches.length === 1 &&
+        (!e.touches || e.touches.length === 0);
 
-      if (!CONFIG.coordPicker) return;
+      pickerInfo.lastRoomTap = wasTap ? "tap" : pickerInfo.lastRoomTap || "cancel";
+      scheduleRoomTouchFinalize(tap, wasTap);
+
+      if (!wasTap || !CONFIG.coordPicker) return;
       var layer = e.target.closest && e.target.closest(".cursor-layer");
+      var scope = getRoomScope();
       if (!layer || !scope) return;
       var action = scope.Room.selectedAction && scope.Room.selectedAction.action;
       if (action && action !== "view") return;
@@ -692,11 +842,12 @@
 
   document.addEventListener(
     "touchcancel",
-    function () {
+    function (e) {
       var tap = roomTap;
-      roomTap = null;
-      document.documentElement.classList.remove(ROOM_TOUCH_PENDING_CLASS);
-      if (tap) cancelRoomSelection(tap, "touchcancel");
+      if (!tap) return;
+      cancelRoomSelection(tap, "touchcancel");
+      if (e.touches && e.touches.length > 0) return;
+      scheduleRoomTouchFinalize(tap, false);
     },
     { passive: true, capture: true },
   );
