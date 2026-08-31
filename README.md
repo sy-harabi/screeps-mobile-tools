@@ -31,7 +31,7 @@ Use Safari with the **Userscripts** extension:
 3. Open the userscript link above in Safari and install it.
 4. Reload Screeps.
 
-**iOS/iPadOS 15.4+ recommended.** iPhone support is based on Safari/API compatibility review and has not yet been verified on a physical iPhone. Alpha-map (`#!/map2`) touch controls are the main feature that still needs device testing.
+**iOS/iPadOS 15.4+ recommended.** iPad Safari has been tested, including alpha-map (`#!/map2`) pan and pinch zoom. iPhone has not yet been physically verified.
 
 ## Usage
 
