@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Screeps Mobile UX
 // @namespace    harabi.screeps.mobile
-// @version      0.9.8
+// @version      0.9.9
 // @description  Mobile UX fixes for screeps.com: room-edge navigation, map touch controls, visible navbar status, spaced room controls, touch resize, same-tile picker, larger UI.
 // @author       sy-harabi
 // @license      MIT
@@ -34,7 +34,7 @@
 (function () {
   "use strict";
 
-  var SM_VERSION = "0.9.8";
+  var SM_VERSION = "0.9.9";
 
   var CONFIG = {
     touchOnly: true,
@@ -623,11 +623,27 @@
 
   var WORLD_MAP_SEL = "section.world-map .map-container";
   var wmPan = null;
+  function worldMapMouseTarget(touch, fallback) {
+    if (!touch) return fallback;
+    var hit = document.elementFromPoint(touch.clientX, touch.clientY);
+    return hit && hit.closest && hit.closest(WORLD_MAP_SEL) ? hit : fallback;
+  }
+  function worldMapTargetDesc(el) {
+    if (!el) return "(none)";
+    var cls = typeof el.className === "string" && el.className.trim()
+      ? "." + el.className.trim().split(/\s+/).slice(0, 3).join(".")
+      : "";
+    return el.tagName.toLowerCase() + cls;
+  }
   document.addEventListener("touchstart", function (e) {
     if (!CONFIG.worldMapPan) return;
     if (e.touches.length !== 1) { if (wmPan) { fireMouse("mouseup", wmPan.target, e.touches[0] || wmPan.last); wmPan = null; } return; }
     if (!(e.target.closest && e.target.closest(WORLD_MAP_SEL))) return;
-    var t=e.touches[0]; wmPan={target:e.target,x:t.clientX,y:t.clientY,moved:false,last:t}; e.preventDefault(); fireMouse("mousedown", e.target, t);
+    var t=e.touches[0], target=worldMapMouseTarget(t,e.target);
+    wmPan={target:target,x:t.clientX,y:t.clientY,moved:false,last:t};
+    e.preventDefault();
+    fireMouse("mousemove", target, t);
+    fireMouse("mousedown", target, t);
   }, { capture:true, passive:false });
   document.addEventListener("touchmove", function (e) {
     if (!wmPan || e.touches.length !== 1) return;
@@ -637,8 +653,18 @@
   }, { capture:true, passive:false });
   function endWmPan(e) {
     if (!wmPan) return;
-    var t=e.changedTouches&&e.changedTouches[0]; fireMouse("mouseup", wmPan.target, t||wmPan.last); if (!wmPan.moved) fireMouse("click", wmPan.target, t||wmPan.last);
-    pickerInfo.lastWmPan = wmPan.moved ? "drag" : "tap"; wmPan=null;
+    var t=e.changedTouches&&e.changedTouches[0], point=t||wmPan.last;
+    if (wmPan.moved) {
+      fireMouse("mouseup", wmPan.target, point);
+      pickerInfo.lastWmPan = "drag";
+    } else {
+      var target=worldMapMouseTarget(point,wmPan.target);
+      fireMouse("mousemove", target, point);
+      fireMouse("mouseup", target, point);
+      fireMouse("click", target, point);
+      pickerInfo.lastWmPan = "tap at="+Math.round(point.clientX)+","+Math.round(point.clientY)+" target="+worldMapTargetDesc(target);
+    }
+    wmPan=null;
   }
   document.addEventListener("touchend", endWmPan, {capture:true,passive:true});
   document.addEventListener("touchcancel", endWmPan, {capture:true,passive:true});
